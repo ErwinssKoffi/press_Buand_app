@@ -64,8 +64,9 @@ sauvegarde/restauration : `docs/deployment/BACKUP-RESTORE.md`.
 
 ## Environnements à réseau restreint (CI isolée)
 
-Si seul GitHub est joignable (ex. sandbox sans accès à proxy.golang.org / golang.org /
-gopkg.in), le graphe de modules se résout via un proxy GOPROXY minimal servant les
-archives `codeload.github.com` (outil utilisé lors de la migration, conservé hors dépôt ;
-voir `docs/migration/03-backend-scaffold.md`). Les directives `replace` de `go.mod`
-documentent le mappage `golang.org/x/* → github.com/golang/*`.
+`go.mod`/`go.sum` utilisent les chemins de modules canoniques (`golang.org/x/*`) ;
+aucun `replace` spécifique n'est requis. Dans un environnement à réseau restreint
+(sandbox sans accès à proxy.golang.org), le graphe se résout via un proxy GOPROXY
+miroir servant les mêmes archives canoniques (outil utilisé lors de la migration,
+conservé hors dépôt — voir `docs/migration/03-backend-scaffold.md`) : il suffit de
+lancer `GOPROXY=<miroir> go build ./...`, les sommes de `go.sum` restent valides.

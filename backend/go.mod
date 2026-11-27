@@ -17,15 +17,3 @@ require (
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 )
-
-// Remplacements pour environnements à réseau restreint : les modules dont le
-// chemin canonique (golang.org/*) n'est pas joignable sont servis par leur
-// dépôt GitHub officiel, qui déclare exactement ce chemin de module.
-// NB: gopkg.in/yaml.v3 (tests d'une dépendance indirecte) n'est pas requis
-// pour compiler le backend.
-replace (
-	golang.org/x/crypto => github.com/golang/crypto v0.59.0
-	golang.org/x/sync => github.com/golang/sync v0.25.0
-	golang.org/x/sys => github.com/golang/sys v0.50.0
-	golang.org/x/text => github.com/golang/text v0.44.0
-)
