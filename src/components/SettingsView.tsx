@@ -5,7 +5,6 @@ import {
   HardDrive,
   KeyRound,
   Plus,
-  RotateCcw,
   SlidersHorizontal,
   Trash2,
   Upload,
@@ -20,7 +19,9 @@ import {
   ServiceMode,
   ShopActivityScope,
 } from '../types/pressing';
-import { DEFAULT_LOYALTY_CONFIG, exportBackupJSON, normalizeSettings } from '../db/localDb';
+import { DEFAULT_LOYALTY_CONFIG, normalizeSettings } from '../db/localDb';
+import { exportBackupJSON } from '../services/backend';
+import { authApi, isApiError, isOfflineError, type BackupReport } from '../services/api';
 import {
   BLANCHISSERIE_SERVICES,
   BLANCHISSERIE_SERVICE_LABELS,
@@ -29,21 +30,15 @@ import {
   SERVICE_MODE_LABELS,
   SHOP_ACTIVITY_LABELS,
 } from '../utils/formatters';
-import {
-  generatePinSaltHex,
-  hashFiveDigitPin,
-  isValidFiveDigitPin,
-  verifyFiveDigitPin,
-} from '../utils/pinAuth';
+import { isValidFiveDigitPin } from '../utils/pinAuth';
 
 interface SettingsViewProps {
   settings: PressingSettings;
   ordersCount: number;
   clientsCount: number;
   onSaveSettings: (settings: PressingSettings) => Promise<void>;
-  onImportBackup: (backup: DatabaseBackup) => Promise<void>;
-  onClearAllData: () => Promise<void>;
-  onResetDemoData: () => Promise<void>;
+  /** Import serveur : preview → confirmation → restore. Retourne le rapport ou null (annulé). */
+  onImportBackup: (backup: DatabaseBackup) => Promise<BackupReport | null>;
   onReopenOnboarding?: () => void;
 }
 
@@ -75,21 +70,27 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   clientsCount,
   onSaveSettings,
   onImportBackup,
-  onClearAllData,
-  onResetDemoData,
   onReopenOnboarding,
 }) => {
   const [form, setForm] = useState<PressingSettings>(() => normalizeSettings(settings));
   const [savedToast, setSavedToast] = useState(false);
   const [configError, setConfigError] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
-  const [confirmAction, setConfirmAction] = useState<'clear' | 'reset' | null>(null);
+  const [hasServerPin, setHasServerPin] = useState(true);
   const [currentPin, setCurrentPin] = useState('');
   const [newPin, setNewPin] = useState('');
   const [confirmNewPin, setConfirmNewPin] = useState('');
   const [pinError, setPinError] = useState('');
   const [pinSavedMsg, setPinSavedMsg] = useState('');
   const [savingPin, setSavingPin] = useState(false);
+
+  // État du secret côté serveur (jamais de hash exposé au client)
+  useEffect(() => {
+    authApi
+      .status()
+      .then((st) => setHasServerPin(st.state !== 'virgin'))
+      .catch(() => setHasServerPin(true));
+  }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -310,7 +311,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     a.download = `sauvegarde-pressing-${getTodayISO()}.json`;
     a.click();
     URL.revokeObjectURL(url);
-    setStatusMessage('Sauvegarde JSON téléchargée avec succès.');
+    setStatusMessage('Sauvegarde serveur téléchargée (format v3, sans secrets).');
   };
 
   const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -320,37 +321,51 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const text = await file.text();
       const parsed = JSON.parse(text) as DatabaseBackup;
       if (!parsed.orders || !parsed.clients || !parsed.catalog) {
-        setStatusMessage('Fichier de sauvegarde invalide.');
+        setStatusMessage('Fichier de sauvegarde invalide (sections obligatoires manquantes).');
         return;
       }
-      await onImportBackup(parsed);
+      const report = await onImportBackup(parsed);
+      if (!report) {
+        setStatusMessage('Restauration annulée — aucune donnée modifiée.');
+        return;
+      }
+      if (report.status === 'échec') {
+        setStatusMessage(`Restauration échouée (rien n'a été modifié) : ${report.errors?.[0] ?? 'erreur inconnue'}`);
+        return;
+      }
+      if (report.status === 'déjà appliqué') {
+        setStatusMessage('Cette sauvegarde a déjà été restaurée (hash identique) — rien à faire.');
+        return;
+      }
       setForm(normalizeSettings(parsed.settings || settings));
-      setStatusMessage('Base locale restaurée avec succès.');
-    } catch {
-      setStatusMessage('Impossible de lire ce fichier JSON.');
+      const created = report.created ?? {};
+      const summary = Object.entries(created)
+        .filter(([, n]) => n > 0)
+        .map(([k, n]) => `${k}:${n}`)
+        .join(', ');
+      setStatusMessage(
+        `Restauration réussie (${summary}${report.photosImported ? `, photos:${report.photosImported}` : ''}). Sauvegarde préalable du serveur : ${report.serverBackup ?? 'n/a'}`
+      );
+    } catch (err) {
+      setStatusMessage(
+        isApiError(err)
+          ? `Import refusé : ${err.message}`
+          : isOfflineError(err)
+            ? 'Serveur injoignable — import impossible hors-ligne.'
+            : 'Impossible de lire ce fichier JSON.'
+      );
     } finally {
       e.target.value = '';
     }
   };
 
+  /** Changement de PIN côté serveur (Argon2id, session requise) — aucun hash client. */
   const handleUpdatePin = async (e: React.FormEvent) => {
     e.preventDefault();
     setPinError('');
     setPinSavedMsg('');
     const cleanNew = newPin.replace(/\D/g, '');
     const cleanConfirm = confirmNewPin.replace(/\D/g, '');
-
-    if (settings.pinHash && settings.pinSalt) {
-      const ok = await verifyFiveDigitPin(
-        currentPin.replace(/\D/g, ''),
-        settings.pinSalt,
-        settings.pinHash
-      );
-      if (!ok) {
-        setPinError('Le code PIN actuel est incorrect.');
-        return;
-      }
-    }
 
     if (!isValidFiveDigitPin(cleanNew)) {
       setPinError('Le nouveau code PIN doit contenir exactement 5 chiffres.');
@@ -363,18 +378,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
     setSavingPin(true);
     try {
-      const nextSalt = generatePinSaltHex(16);
-      const nextHash = await hashFiveDigitPin(cleanNew, nextSalt);
-      const updated = normalizeSettings({
-        ...form,
-        pinHash: nextHash,
-        pinSalt: nextSalt,
-      });
-      await onSaveSettings(updated);
+      await authApi.changePin(currentPin.replace(/\D/g, ''), cleanNew);
       setCurrentPin('');
       setNewPin('');
       setConfirmNewPin('');
-      setPinSavedMsg('Code PIN à 5 chiffres mis à jour.');
+      setPinSavedMsg('Code PIN à 5 chiffres mis à jour côté serveur.');
+    } catch (err) {
+      if (isApiError(err)) {
+        setPinError(
+          err.status === 401
+            ? 'Le code PIN actuel est incorrect.'
+            : err.status === 422
+              ? 'Nouveau code PIN refusé par le serveur (trop faible).'
+              : err.message
+        );
+      } else if (isOfflineError(err)) {
+        setPinError('Serveur injoignable — modification impossible hors-ligne.');
+      } else {
+        setPinError('Erreur inconnue lors de la modification.');
+      }
     } finally {
       setSavingPin(false);
     }
@@ -1140,9 +1162,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
 
           <p className="text-xs text-slate-600 leading-relaxed">
-            Toutes vos données restent enregistrées localement sur votre Mac ou PC Windows, sans
-            connexion internet. Exportez régulièrement un fichier de sauvegarde JSON pour le
-            conserver sur clé USB ou le transférer sur un autre poste.
+            Vos données sont enregistrées sur le serveur PostgreSQL de l&apos;atelier. Exportez
+            régulièrement un fichier de sauvegarde JSON (format compatible v3, sans secrets) pour
+            le conserver sur clé USB ou le transférer sur un autre poste.
           </p>
 
           <div className="flex flex-col sm:flex-row gap-2.5">
@@ -1179,57 +1201,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-3">
           <h3 className="text-sm font-semibold text-slate-900">
-            Réinitialisation des données
+            Données &amp; sauvegarde serveur
           </h3>
           <p className="text-xs text-slate-500">
-            Videz les exemples de démonstration pour démarrer votre activité réelle à zéro, ou
-            restaurez le jeu d&apos;essai Abidjan.
+            Les données sont désormais persistées sur le serveur PostgreSQL. L&apos;export JSON
+            (format v3, sans secrets) reste disponible ci-dessus ; la restauration d&apos;une
+            sauvegarde se fait en deux étapes (rapport de prévisualisation puis confirmation).
+            L&apos;effacement automatique et les jeux de démonstration sont désactivés sur des
+            données réelles.
           </p>
-
-          <div className="flex flex-wrap gap-2.5 pt-1">
-            {confirmAction === 'clear' ? (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={async () => {
-                    await onClearAllData();
-                    setConfirmAction(null);
-                    setStatusMessage('Base vidée : prêt pour vos vrais tickets.');
-                  }}
-                  className="rounded-lg bg-red-600 px-3 py-2 text-xs font-medium text-white hover:bg-red-700 cursor-pointer"
-                >
-                  Confirmer la suppression
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmAction(null)}
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-600 cursor-pointer"
-                >
-                  Annuler
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setConfirmAction('clear')}
-                className="rounded-lg border border-red-200 bg-red-50 px-3.5 py-2 text-xs font-medium text-red-800 hover:bg-red-100 cursor-pointer"
-              >
-                Démarrer à zéro (Vider les commandes)
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={async () => {
-                await onResetDemoData();
-                setStatusMessage('Données de démonstration rechargées.');
-              }}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              <span>Recharger démo Abidjan</span>
-            </button>
-          </div>
         </div>
 
         {/* Sécurité PIN 5 chiffres & Relance Onboarding */}
@@ -1247,7 +1227,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
 
           <form onSubmit={handleUpdatePin} className="space-y-3">
-            {settings.pinHash && settings.pinSalt && (
+            {hasServerPin && (
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
                   Code PIN actuel (5 chiffres)

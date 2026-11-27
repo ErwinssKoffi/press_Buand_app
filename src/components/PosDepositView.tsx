@@ -47,6 +47,7 @@ import {
 } from '../utils/formatters';
 import { resolveCatalogItemImage } from '../utils/catalogImages';
 import { compressClaimPhoto } from '../utils/imageCompress';
+import { photoSrc } from '../utils/photos';
 import { GarmentThumbnail } from './GarmentThumbnail';
 
 interface AutoDeliveryPlan {
@@ -1698,7 +1699,7 @@ export const PosDepositView: React.FC<PosDepositViewProps> = ({
                     className="relative rounded-md border border-slate-200 bg-white p-1"
                   >
                     <img
-                      src={ph.dataUrl}
+                      src={photoSrc(ph)}
                       alt={ph.caption}
                       className="h-16 w-full rounded object-cover"
                     />

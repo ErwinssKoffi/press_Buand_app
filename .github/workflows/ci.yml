@@ -1,0 +1,120 @@
+# CI Éclat Pressing — backend Go, frontend React, validation Docker Compose.
+# Aucun serveur Node : le frontend n'installe que ses dépendances de build.
+name: CI
+
+on:
+  push:
+    branches: [main, 'arena/**']
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend Go — vet, tests (PostgreSQL), image
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: eclat
+          POSTGRES_PASSWORD: eclat_ci
+          POSTGRES_DB: eclat_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U eclat -d eclat_ci"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache-dependency-path: backend/go.sum
+      - name: gofmt (aucun fichier non formaté)
+        working-directory: backend
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: go vet
+        working-directory: backend
+        # go.sum du dépôt est canonique (sumdb officielle). En cas d'écart,
+        # régénération de référence affichée en annotation (logs non lisibles hors UI).
+        run: |
+          code=0
+          go vet ./... > /tmp/vet.log 2>&1 || code=$?
+          if [ $code -ne 0 ]; then
+            grep -q "checksum mismatch\|missing go.sum" /tmp/vet.log && {
+              rm go.sum
+              go mod tidy >/dev/null 2>&1 || true
+              go mod tidy >/dev/null 2>&1
+              split -b 900 go.sum /tmp/gosum- 2>/dev/null
+              i=1
+              for f in /tmp/gosum-*; do
+                msg="$(< "$f")"
+                msg="${msg//'%'/'%25'}"
+                msg="${msg//$'\n'/'%0A'}"
+                echo "::error title=gosum-part-$i::$msg"
+                i=$((i+1))
+              done
+            }
+            echo "::error title=go vet::$(tail -c 1200 /tmp/vet.log | tr '\n' ';')"
+          fi
+          exit $code
+      - name: go test (unitaires + intégration PostgreSQL)
+        working-directory: backend
+        env:
+          ECLAT_TEST_DATABASE_URL: postgres://eclat:eclat_ci@127.0.0.1:5432/eclat_ci?sslmode=disable
+        run: |
+          code=0
+          go test -p 1 ./... -count=1 > /tmp/test.log 2>&1 || code=$?
+          detail="$(grep -B1 -A14 'FAIL: ' /tmp/test.log | head -30 | tr '\n' ';')"
+          echo "::error title=go test::${detail:-$(tail -c 800 /tmp/test.log | tr '\n' ';')}"
+          exit $code
+      - name: Build image backend
+        working-directory: backend
+        run: docker build -t eclat-api:ci .
+
+  frontend:
+    name: Frontend — lint, tests outbox, build PWA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Installer (lockfile)
+        run: bun install --frozen-lockfile
+      - name: Typecheck (tsc strict)
+        run: bun run lint
+      - name: Tests outbox/sync (fake-indexeddb)
+        run: bun test tests/
+      - name: Build PWA
+        run: bun run build
+
+  compose:
+    name: Docker Compose — db + api (démon réel)
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Démarrer db + api (migrations auto au démarrage)
+        run: docker compose up --build -d
+      - name: Healthchecks et readiness
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/healthz >/dev/null \
+              && curl -fsS http://127.0.0.1:8080/readyz >/dev/null; then
+              echo "api ready"; exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs --tail 80
+          exit 1
+      - name: Bootstrap auth de bout en bout (conteneur)
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/auth/setup \
+            -H 'Content-Type: application/json' -d '{"secret":"86421"}')
+          [ "$code" = "204" ] || { echo "setup → $code"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/auth/login \
+            -H 'Content-Type: application/json' -d '{"pinOrPassword":"86421"}')
+          [ "$code" = "200" ] || { echo "login → $code"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/readyz)
+          [ "$code" = "200" ] || exit 1
+          echo "compose OK : db + api + migrations + setup + login"
+      - name: Arrêt propre
+        if: always()
+        run: docker compose down -v

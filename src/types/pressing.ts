@@ -167,10 +167,17 @@ export interface Client {
 
 export interface IntakePhoto {
   id: string;
-  dataUrl: string;
+  /**
+   * Data URL locale (capture frontend) — absent pour les photos migrées
+   * côté serveur, qui exposent `url` (endpoint authentifié /api/v1/orders/
+   * {id}/photos/{photoId}, stockage privé). Rendu : dataUrl ?? url.
+   */
+  dataUrl?: string;
   caption: string;
   itemName?: string;
   capturedAt: string;
+  /** URL authentifiée fournie par le backend Go (stratégie stockage privé). */
+  url?: string;
 }
 
 export interface LoyaltyConfig {
