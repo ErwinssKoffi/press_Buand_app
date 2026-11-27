@@ -51,10 +51,12 @@ migrations/         SQL versionnés NNNN_nom.sql
 ```bash
 go test ./...
 # intégration PostgreSQL (base dédiée obligatoire) :
-ECLAT_TEST_DATABASE_URL='postgres://eclat@127.0.0.1:5432/eclat_it?sslmode=disable' go test ./...
+ECLAT_TEST_DATABASE_URL='postgres://eclat@127.0.0.1:5432/eclat_it?sslmode=disable' go test -p 1 ./...
 ```
 
 Les tests d'intégration sautent proprement si `ECLAT_TEST_DATABASE_URL` n'est pas défini.
+`-p 1` sérialise les packages : les fixtures tronquent les mêmes tables et un scénario
+ne doit jamais être interrompu par un `TRUNCATE` d'un autre package.
 
 ## Exploitation
 

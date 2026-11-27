@@ -56,7 +56,7 @@ bun run lint            # tsc --noEmit
 bun run build           # vite build (+ service worker PWA)
 bun test tests/         # tests outbox/sync (fake-indexeddb)
 bun run test:e2e        # E2E navigateur (serveurs :3000/:8080 démarrés, Chromium du registre npm)
-cd backend && go vet ./... && go test ./...   # tests métier + intégration PostgreSQL
+cd backend && go vet ./... && go test -p 1 ./...   # tests métier + intégration PostgreSQL (-p 1 : bases de test partagées)
 ```
 
 Tests d'intégration PostgreSQL : exporter `ECLAT_TEST_DATABASE_URL` (base de test

@@ -49,7 +49,7 @@ l'automatisation ne peut pas vérifier : rendu visuel, PWA installée, impressio
 
 ```bash
 # Backend (PostgreSQL de test requis pour les INT)
-cd backend && ECLAT_TEST_DATABASE_URL="postgres://eclat@127.0.0.1:5432/eclat_test" go test ./... -count=1
+cd backend && ECLAT_TEST_DATABASE_URL="postgres://eclat@127.0.0.1:5432/eclat_test" go test -p 1 ./... -count=1
 
 # Frontend
 bun run lint && bun run build && bun test tests/
