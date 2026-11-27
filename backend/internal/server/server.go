@@ -15,15 +15,15 @@ import (
 
 // Deps rassemble les dépendances du serveur HTTP.
 type Deps struct {
-	Pool          *pgxpool.Pool
-	Log           *slog.Logger
-	CORSOrigins   []string
-	BodyLimit     int64
-	ReadTimeout   time.Duration
-	WriteTimeout  time.Duration
-	IdleTimeout   time.Duration
-	Auth          http.Handler // handler d'auth (routes /auth/*) — injecté à la phase 04
-	API           http.Handler // routes métier authentifiées — injecté à la phase 06
+	Pool         *pgxpool.Pool
+	Log          *slog.Logger
+	CORSOrigins  []string
+	BodyLimit    int64
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+	Auth         http.Handler // handler d'auth (routes /auth/*) — injecté à la phase 04
+	API          http.Handler // routes métier authentifiées — injecté à la phase 06
 }
 
 // New construit le serveur HTTP complet.
