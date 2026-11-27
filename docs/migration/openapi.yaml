@@ -329,20 +329,38 @@ paths:
   /sync/push:
     post:
       tags: [sync]
-      summary: Pousser des opérations offline (idempotent)
+      summary: Pousser des opérations offline (idempotent, Prompt 09)
+      description: |
+        Chaque opération est appliquée par les MÊMES services métier que les
+        endpoints en ligne (recalcul serveur des montants, ticket officiel en
+        transaction). Verdicts stables et journalisés (device_id+operation_id) :
+        accepted | duplicate (déjà appliqué — timeout safe) | conflict
+        (pricing_changed, rejouable avec acceptPricing:true) | rejected
+        (code + message). Types autorisés hors ligne : client.create,
+        order.create, order.payment, expense.create, inventory.movement,
+        logistics.save. Journal : table sync_operations ; device : devices.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SyncPush'}}}}
-      responses: {'501': {description: not_implemented (finalisée au Prompt 09)}}
+      responses:
+        '200': {description: Résultats par opération + curseur, content: {application/json: {schema: {$ref: '#/components/schemas/SyncPushResults'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
   /sync/pull:
     get:
       tags: [sync]
-      summary: Changements serveur incrémentaux
-      parameters: [{name: sinceRevision, in: query, schema: {type: integer, format: int64}}, {name: limit, in: query, schema: {type: integer, default: 500, maximum: 2000}}]
-      responses: {'501': {description: not_implemented (finalisée au Prompt 09)}}
+      summary: Changements serveur incrémentaux (cursor change_seq)
+      parameters:
+        - {name: sinceRevision, in: query, schema: {type: integer, format: int64}}
+        - {name: limit, in: query, schema: {type: integer, default: 500, maximum: 2000}}
+        - {name: deviceId, in: query, schema: {type: string}}
+      responses:
+        '200': {description: Page de changements (jamais de snapshot complet), content: {application/json: {schema: {$ref: '#/components/schemas/SyncPull'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
   /sync/status:
     get:
       tags: [sync]
       summary: État de synchronisation de l'appareil
-      responses: {'501': {description: not_implemented (finalisée au Prompt 09)}}
+      parameters: [{name: deviceId, in: query, schema: {type: string}}]
+      responses:
+        '200': {description: Curseur serveur + appareil, content: {application/json: {schema: {type: object, properties: {serverTime: {type: string}, cursor: {type: integer, format: int64}, device: {type: object}}}}}}
 components:
   securitySchemes:
     sessionCookie: {type: apiKey, in: cookie, name: eclat_session}

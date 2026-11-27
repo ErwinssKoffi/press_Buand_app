@@ -70,12 +70,39 @@ interface PressingDBSchema extends DBSchema {
     value: InventoryMovement;
     indexes: { 'by-createdAt': string; 'by-itemId': string };
   };
+  // --- Offline-first (Prompt 09, DB v4) ---
+  outbox: {
+    key: string;
+    value: import('../services/offline/types').OutboxOperation;
+    indexes: { 'by-status': string; 'by-localCreatedAt': string };
+  };
+  conflicts: {
+    key: string;
+    value: import('../services/offline/types').ConflictRecord;
+  };
+  syncMeta: {
+    key: string;
+    value: { key: string; value: unknown };
+  };
+  reconciliations: {
+    key: string;
+    value: import('../services/offline/types').Reconciliation;
+  };
 }
 
 const DB_NAME = 'eclat_pressing_ci_v1';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 let dbPromise: Promise<IDBPDatabase<PressingDBSchema>> | null = null;
+
+/** Ferme la connexion cache (teardown app / tests fake-indexeddb). */
+export async function closeDB(): Promise<void> {
+  if (dbPromise) {
+    const db = await dbPromise;
+    db.close();
+    dbPromise = null;
+  }
+}
 
 export async function getDB(): Promise<IDBPDatabase<PressingDBSchema>> {
   if (!dbPromise) {
@@ -114,6 +141,20 @@ export async function getDB(): Promise<IDBPDatabase<PressingDBSchema>> {
         }
         if (!db.objectStoreNames.contains('inventory')) {
           db.createObjectStore('inventory', { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains('outbox')) {
+          const outboxStore = db.createObjectStore('outbox', { keyPath: 'operationId' });
+          outboxStore.createIndex('by-status', 'status');
+          outboxStore.createIndex('by-localCreatedAt', 'localCreatedAt');
+        }
+        if (!db.objectStoreNames.contains('conflicts')) {
+          db.createObjectStore('conflicts', { keyPath: 'operationId' });
+        }
+        if (!db.objectStoreNames.contains('syncMeta')) {
+          db.createObjectStore('syncMeta', { keyPath: 'key' });
+        }
+        if (!db.objectStoreNames.contains('reconciliations')) {
+          db.createObjectStore('reconciliations', { keyPath: 'provisionalId' });
         }
         if (!db.objectStoreNames.contains('inventoryMovements')) {
           const movStore = db.createObjectStore('inventoryMovements', { keyPath: 'id' });

@@ -32,13 +32,14 @@ type API struct {
 	reports   *service.ReportsService
 	expenses  service.ExpenseStore
 	backup    *backup.Service
+	sync      *service.SyncService
 }
 
 func NewAPI(orders *service.OrderService, settings *service.SettingsService, catalog *service.CatalogService,
 	clients *service.ClientService, logistics *service.LogisticsService, inventory *service.InventoryService,
 	cashbook *service.CashbookService, reports *service.ReportsService, expenses service.ExpenseStore,
-	backup *backup.Service) *API {
-	return &API{orders, settings, catalog, clients, logistics, inventory, cashbook, reports, expenses, backup}
+	backup *backup.Service, sync *service.SyncService) *API {
+	return &API{orders, settings, catalog, clients, logistics, inventory, cashbook, reports, expenses, backup, sync}
 }
 
 // Routes monte toutes les routes métier du contrat.
@@ -105,10 +106,10 @@ func (a *API) Routes(r chi.Router) {
 	r.Get("/backup/export", a.backupExport)
 	r.Post("/backup/preview", a.backupPreview)
 	r.Post("/backup/restore", a.backupRestore)
-	// sync (préparée ici, finalisée au Prompt 09)
-	r.Post("/sync/push", a.notImplemented("sync.push", "Prompt 09"))
-	r.Get("/sync/pull", a.notImplemented("sync.pull", "Prompt 09"))
-	r.Get("/sync/status", a.notImplemented("sync.status", "Prompt 09"))
+	// sync offline-first (Prompt 09)
+	r.Post("/sync/push", a.syncPush)
+	r.Get("/sync/pull", a.syncPull)
+	r.Get("/sync/status", a.syncStatus)
 }
 
 // --- helpers ---
@@ -903,4 +904,42 @@ func (a *API) notImplemented(feature, phase string) http.HandlerFunc {
 		WriteError(w, http.StatusNotImplemented, "not_implemented",
 			fmt.Sprintf("%s sera disponible à la phase %s.", feature, phase), nil)
 	}
+}
+
+// ---------- sync offline-first (Prompt 09) ----------
+
+// syncPush : lot d'opérations hors ligne, verdicts stables et idempotents.
+func (a *API) syncPush(w http.ResponseWriter, r *http.Request) {
+	var in service.SyncPushIn
+	if err := decodeBody(w, r, &in); err != nil {
+		return
+	}
+	results, cursor, err := a.sync.Push(r.Context(), in)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"results": results, "cursor": cursor})
+}
+
+// syncPull : changements incrémentaux depuis sinceRevision (cursor).
+func (a *API) syncPull(w http.ResponseWriter, r *http.Request) {
+	since, _ := strconv.ParseInt(r.URL.Query().Get("sinceRevision"), 10, 64)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	out, err := a.sync.Pull(r.Context(), r.URL.Query().Get("deviceId"), since, limit)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// syncStatus : curseur serveur + état de l'appareil (?deviceId=).
+func (a *API) syncStatus(w http.ResponseWriter, r *http.Request) {
+	out, err := a.sync.Status(r.Context(), r.URL.Query().Get("deviceId"))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
 }

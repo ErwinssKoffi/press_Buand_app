@@ -50,6 +50,44 @@ import type {
 } from '../types/pressing';
 import { resolveCatalogItemImage } from '../utils/catalogImages';
 import { getDB, normalizeSettings } from '../db/localDb';
+import { isOfflineError } from './api';
+import {
+  enqueueOperation,
+  type OfflineOpType,
+} from './offline/outbox';
+import { provisionalTicket } from '../utils/provisional';
+
+/**
+ * Opérations offline explicitement autorisées (Prompt 09 §7) : création de
+ * client, dépôt (commande), paiement complémentaire, dépense, mouvement de
+ * stock, tâche logistique. TOUT le reste (settings, catalogue, stocks eux-
+ * mêmes, import/export, PIN, void, changements de statut) exige Internet —
+ * les tentatives hors-ligne échouent proprement en OfflineError affichée.
+ */
+
+/** Écrit best-effort dans le cache IndexedDB (brouillons visibles hors-ligne). */
+async function cacheUpsert(store: 'orders' | 'payments' | 'clients' | 'expenses' | 'logistics' | 'inventoryMovements', row: unknown): Promise<void> {
+  try {
+    const db = await getDB();
+    await db.put(store as never, row as never);
+  } catch {
+    /* cache best effort */
+  }
+}
+
+/** Enfile l'opération si le serveur est injoignable ; sinon undefined. */
+async function offlineOrThrow(
+  type: OfflineOpType,
+  payload: Record<string, unknown>,
+  err: unknown,
+  extra?: { provisionalRefs?: Record<string, string>; provisionalTicket?: string }
+): Promise<false> {
+  if (isOfflineError(err)) {
+    await enqueueOperation({ type, payload, ...extra });
+    return false;
+  }
+  throw err;
+}
 
 // ---------- Mappings serveur (nullables) → types frontend ----------
 
@@ -235,7 +273,17 @@ export async function loadAllData(): Promise<AllData> {
 }
 
 export async function saveClient(client: Client): Promise<void> {
-  await clientsApi.save(client);
+  const payload = { ...client };
+  try {
+    await clientsApi.save(client);
+  } catch (err) {
+    // ID provisoire = UUID conservé comme ID réel côté serveur (réconciliation triviale)
+    const id = client.id || crypto.randomUUID();
+    const withId = { ...payload, id };
+    if (await offlineOrThrow('client.create', withId as Record<string, unknown>, err)) return;
+    await cacheUpsert('clients', { ...client, id });
+    return; // enfilé : le client local (cache) garde son ID provisoire
+  }
 }
 
 export async function deleteClient(id: string): Promise<void> {
@@ -321,9 +369,60 @@ export async function createOrderWithPayment(
     })),
   };
 
-  const serverOrder = await ordersApi.create(payload, idemKey('ord'));
-  const settings = await settingsApi.get();
-  return { order: mapOrder(serverOrder), settings: normalizeSettings(settings) };
+  let serverOrder: ServerOrder | null = null;
+  try {
+    serverOrder = await ordersApi.create(payload, idemKey('ord'));
+  } catch (err) {
+    // ID provisoire = operationId serveur (clé du journal : réconciliation sûre)
+    const provisionalId = crypto.randomUUID();
+    const ticket = provisionalTicket();
+    if (!(await enqueueOperation({
+      type: 'order.create',
+      payload: payload as unknown as Record<string, unknown>,
+      provisionalRefs: orderDraft.clientId ? { clientId: orderDraft.clientId } : undefined,
+      provisionalTicket: ticket,
+      operationId: provisionalId,
+    }))) {
+      // brouillon local persisté : référence provisoire clairement distinguée
+      // du ticket définitif (préfixe LOCAL-) jusqu'à la synchronisation
+      const nowIso = new Date().toISOString();
+      const provisionalOrder: PressingOrder = {
+        ...(orderDraft as PressingOrder),
+        id: provisionalId,
+        ticketNumber: ticket,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      await cacheUpsert('orders', provisionalOrder);
+      // acompte cash local indicatif (le serveur recalculera ; pull réalignera)
+      const cash = Math.max(0, Math.round((orderDraft.paidFCFA || 0) - Math.max(0, Math.round(orderDraft.prepaidUsedFCFA || 0))));
+      if (cash > 0) {
+        await cacheUpsert('payments', {
+          id: `pay-${crypto.randomUUID()}`,
+          orderId: provisionalId,
+          ticketNumber: ticket,
+          clientName: orderDraft.clientName,
+          amountFCFA: cash,
+          method: initialPaymentMethod,
+          paidAt: nowIso,
+          type: 'acompte',
+        });
+      }
+      let cachedSettings: PressingSettings | undefined;
+      try {
+        const db = await getDB();
+        cachedSettings = normalizeSettings((await db.get('settings', 'default')) ?? undefined);
+      } catch {
+        cachedSettings = undefined;
+      }
+      return { order: provisionalOrder, settings: cachedSettings ?? normalizeSettings(undefined) };
+    }
+  }
+  if (serverOrder) {
+    const settings = await settingsApi.get();
+    return { order: mapOrder(serverOrder), settings: normalizeSettings(settings) };
+  }
+  throw new Error('création de commande : état inattendu');
 }
 
 export async function updateOrderStatus(orderId: string, status: PressingOrder['status']): Promise<void> {
@@ -336,7 +435,41 @@ export async function recordOrderPayment(
   method: PaymentMethod
 ): Promise<void> {
   if (amountFCFA <= 0) return;
-  await ordersApi.addPayment(orderId, { amountFCFA: Math.round(amountFCFA), method }, idemKey('pay'));
+  try {
+    await ordersApi.addPayment(orderId, { amountFCFA: Math.round(amountFCFA), method }, idemKey('pay'));
+  } catch (err) {
+    // l'ID de commande (provisoire ou officielle) est résolu côté serveur via
+    // le journal de sync ; localement on met le cache à jour (indicatif)
+    if (await offlineOrThrow(
+      'order.payment',
+      { orderId, amountFCFA: Math.round(amountFCFA), method },
+      err,
+      { provisionalRefs: { orderId } }
+    )) {
+      return;
+    }
+    try {
+      const db = await getDB();
+      const order = await db.get('orders', orderId);
+      if (order) {
+        const nowIso = new Date().toISOString();
+        const newPaid = Math.min(order.totalFCFA, order.paidFCFA + Math.round(amountFCFA));
+        await db.put('orders', { ...order, paidFCFA: newPaid, updatedAt: nowIso });
+        await db.put('payments', {
+          id: `pay-${crypto.randomUUID()}`,
+          orderId,
+          ticketNumber: order.ticketNumber,
+          clientName: order.clientName,
+          amountFCFA: Math.round(amountFCFA),
+          method,
+          paidAt: nowIso,
+          type: newPaid >= order.totalFCFA ? 'solde' : 'acompte',
+        } as never);
+      }
+    } catch {
+      /* cache best effort */
+    }
+  }
 }
 
 /**
@@ -348,7 +481,12 @@ export async function deleteOrder(orderId: string): Promise<void> {
 }
 
 export async function saveExpense(expense: ExpenseRecord): Promise<void> {
-  await expensesApi.create(expense);
+  try {
+    await expensesApi.create(expense);
+  } catch (err) {
+    if (await offlineOrThrow('expense.create', { ...expense, id: expense.id || crypto.randomUUID() } as Record<string, unknown>, err)) return;
+    await cacheUpsert('expenses', { ...expense, id: expense.id || crypto.randomUUID() });
+  }
 }
 
 export async function deleteExpense(id: string): Promise<void> {
@@ -364,7 +502,12 @@ export async function deleteDeliveryZone(id: string): Promise<void> {
 }
 
 export async function saveLogisticsTask(task: LogisticsTask): Promise<void> {
-  await logisticsApi.save(mapTaskOut(task));
+  const body = mapTaskOut(task);
+  try {
+    await logisticsApi.save(body);
+  } catch (err) {
+    await offlineOrThrow('logistics.save', { ...body, id: task.id || crypto.randomUUID() } as Record<string, unknown>, err);
+  }
 }
 
 function mapTaskOut(task: LogisticsTask): LogisticsTask {
@@ -407,18 +550,20 @@ export async function recordInventoryMovement(params: {
   recordExpense?: boolean;
   paymentMethod?: PaymentMethod;
 }): Promise<void> {
-  await inventoryApi.movement(
-    params.itemId,
-    {
-      type: params.type,
-      quantity: params.quantity,
-      unitCostFCFA: params.unitCostFCFA ? Math.round(params.unitCostFCFA) : undefined,
-      reason: params.reason,
-      recordExpense: params.recordExpense,
-      paymentMethod: params.paymentMethod,
-    },
-    idemKey('mov')
-  );
+  const body = {
+    itemId: params.itemId,
+    type: params.type,
+    quantity: params.quantity,
+    unitCostFCFA: params.unitCostFCFA ? Math.round(params.unitCostFCFA) : undefined,
+    reason: params.reason,
+    recordExpense: params.recordExpense,
+    paymentMethod: params.paymentMethod,
+  };
+  try {
+    await inventoryApi.movement(params.itemId, body, idemKey('mov'));
+  } catch (err) {
+    await offlineOrThrow('inventory.movement', body as Record<string, unknown>, err);
+  }
 }
 
 /** Export serveur v3 (compatible avec l'ancien format, sans secrets). */

@@ -112,16 +112,17 @@ func run(log *slog.Logger) error {
 	authH := httph.NewAuthHandlers(authSvc, cfg.CookieSecure, cfg.CookieDomain)
 
 	srv := server.New(server.Deps{
-		Pool:          pool,
-		Log:           log,
-		CORSOrigins:   cfg.CORSOrigins,
-		BodyLimit:     cfg.BodyLimitBytes,
-		ReadTimeout:   20 * time.Second,
-		WriteTimeout:  60 * time.Second,
-		IdleTimeout:   120 * time.Second,
-		AuthSvc:       authSvc,
-		AuthHandlers:  authH,
-		APIRouter:     buildAPIRouter(httph.NewAPI(orderSvc, settingsSvc, catalogSvc, clientSvc, logisticsSvc, inventorySvc, cashbookSvc, reportsSvc, expenseRepo, backup.NewService(pool, cfg.StorageDir))),
+		Pool:         pool,
+		Log:          log,
+		CORSOrigins:  cfg.CORSOrigins,
+		BodyLimit:    cfg.BodyLimitBytes,
+		ReadTimeout:  20 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+		AuthSvc:      authSvc,
+		AuthHandlers: authH,
+		APIRouter: buildAPIRouter(httph.NewAPI(orderSvc, settingsSvc, catalogSvc, clientSvc, logisticsSvc, inventorySvc, cashbookSvc, reportsSvc, expenseRepo, backup.NewService(pool, cfg.StorageDir),
+			service.NewSyncService(pool, orderSvc, settingsSvc, catalogSvc, clientSvc, logisticsSvc, inventorySvc, cashbookSvc, expenseRepo))),
 		SecureCookies: cfg.CookieSecure,
 		CookieDomain:  cfg.CookieDomain,
 	})

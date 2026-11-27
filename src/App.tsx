@@ -58,6 +58,7 @@ import {
 } from './services/backend';
 import { DEFAULT_SETTINGS, normalizeSettings } from './db/localDb';
 import { authApi, backupApi, isApiError, isOfflineError, type AuthState, type BackupReport } from './services/api';
+import { onSyncState, startSyncManager, syncNow, type SyncState } from './services/offline/syncManager';
 import { getTodayISO, STATUS_META } from './utils/formatters';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineBanner } from './components/OfflineBanner';
@@ -113,6 +114,7 @@ export default function App() {
   const [authState, setAuthState] = useState<AuthState | null>(null);
   const [dataFromCache, setDataFromCache] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [syncState, setSyncState] = useState<SyncState>({ pending: 0, conflicts: 0, failed: 0, syncing: false });
 
   const refreshData = useCallback(async () => {
     const data = await loadAllData();
@@ -175,6 +177,11 @@ export default function App() {
   useEffect(() => {
     registerSW({ immediate: true });
     initSession();
+    // Prompt 09 : déclencheurs de sync (démarrage, online, focus, manuel) —
+    // pas de timer permanent ; single-flight dans syncNow.
+    startSyncManager();
+    const off = onSyncState(setSyncState);
+    return off;
   }, [initSession]);
 
   const selectedOrder = orders.find((o) => o.id === selectedOrderId) || null;
@@ -450,7 +457,15 @@ export default function App() {
             refreshData();
           }}
         />
-        <OfflineBanner />
+        <OfflineBanner
+          pending={syncState.pending}
+          conflicts={syncState.conflicts}
+          lastSyncAt={syncState.lastSyncAt}
+          syncing={syncState.syncing}
+          onSync={() => {
+            void syncNow().then(() => refreshData());
+          }}
+        />
       </>
     );
   }
@@ -777,7 +792,15 @@ export default function App() {
           />
         )}
 
-        <OfflineBanner />
+        <OfflineBanner
+          pending={syncState.pending}
+          conflicts={syncState.conflicts}
+          lastSyncAt={syncState.lastSyncAt}
+          syncing={syncState.syncing}
+          onSync={() => {
+            void syncNow().then(() => refreshData());
+          }}
+        />
       </div>
     </div>
   );

@@ -411,3 +411,40 @@ export type ServerPayment = Omit<PaymentRecord, 'orderId'> & {
   orderId: string | null;
   kind: 'order' | 'prepaid_topup';
 };
+
+// ---------- Sync offline-first (Prompt 09) ----------
+
+export interface SyncPushOut {
+  results: Array<{
+    operationId: string;
+    status: 'accepted' | 'duplicate' | 'conflict' | 'rejected';
+    entity?: Record<string, unknown>;
+    errorCode?: string;
+    message?: string;
+    officialTicket?: string;
+  }>;
+  cursor: number;
+}
+
+export interface SyncPullOut {
+  sinceRevision: number;
+  cursor: number;
+  hasMore: boolean;
+  changes: Array<{ entity: string; entity_id: string; op: 'upsert' | 'delete'; data: Record<string, unknown>; revision: number }>;
+}
+
+export const syncApi = {
+  push: (body: { deviceId: string; operations: Array<{ operationId: string; type: string; payload: Record<string, unknown>; dependsOn?: string; localCreatedAt?: string }> }) =>
+    apiRequest<SyncPushOut>('/api/v1/sync/push', { method: 'POST', body, timeoutMs: LONG_TIMEOUT_MS }),
+  pull: (params: { deviceId?: string; sinceRevision?: number; limit?: number }) => {
+    const search = new URLSearchParams();
+    if (params.deviceId) search.set('deviceId', params.deviceId);
+    if (params.sinceRevision !== undefined) search.set('sinceRevision', String(params.sinceRevision));
+    if (params.limit) search.set('limit', String(params.limit));
+    return apiRequest<SyncPullOut>(`/api/v1/sync/pull?${search.toString()}`, { timeoutMs: LONG_TIMEOUT_MS });
+  },
+  status: (deviceId?: string) =>
+    apiRequest<{ serverTime: string; cursor: number; device?: Record<string, unknown> }>(
+      `/api/v1/sync/status${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ''}`
+    ),
+};

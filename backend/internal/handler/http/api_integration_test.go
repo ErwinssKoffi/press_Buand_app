@@ -69,15 +69,22 @@ func newFullStackServer(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 	expenseRepo := &postgres.ExpenseRepo{}
 	orderSvc := service.NewOrderService(orderRepo, catalogRepo, paymentRepo, settingsRepo, clientRepo, ticketRepo, zoneRepo, txm, audit)
 	orderSvc.SetStorageDir(t.TempDir())
+	settingsSvc := service.NewSettingsService(settingsRepo, txm, audit)
+	catalogSvc := service.NewCatalogService(catalogRepo, txm, audit)
+	clientSvc := service.NewClientService(clientRepo, paymentRepo, txm, audit)
+	logisticsSvc := service.NewLogisticsService(&postgres.LogisticsRepo{}, zoneRepo, txm, audit)
+	inventorySvc := service.NewInventoryService(&postgres.InventoryRepo{}, txm, audit)
+	cashbookSvc := service.NewCashbookService(expenseRepo, txm, audit)
 	api := httph.NewAPI(orderSvc,
-		service.NewSettingsService(settingsRepo, txm, audit),
-		service.NewCatalogService(catalogRepo, txm, audit),
-		service.NewClientService(clientRepo, paymentRepo, txm, audit),
-		service.NewLogisticsService(&postgres.LogisticsRepo{}, zoneRepo, txm, audit),
-		service.NewInventoryService(&postgres.InventoryRepo{}, txm, audit),
-		service.NewCashbookService(expenseRepo, txm, audit),
+		settingsSvc,
+		catalogSvc,
+		clientSvc,
+		logisticsSvc,
+		inventorySvc,
+		cashbookSvc,
 		service.NewReportsService(&postgres.ReportRepo{}, txm),
-		expenseRepo, backup.NewService(pool, t.TempDir()))
+		expenseRepo, backup.NewService(pool, t.TempDir()),
+		service.NewSyncService(pool, orderSvc, settingsSvc, catalogSvc, clientSvc, logisticsSvc, inventorySvc, cashbookSvc, expenseRepo))
 	router := chi.NewRouter()
 	api.Routes(router)
 
@@ -392,8 +399,8 @@ func TestAPIFullStackIntegration(t *testing.T) {
 	if st, body := c.do("POST", "/api/v1/backup/restore", map[string]any{}); st != 422 || codeOf(body) != "business_rule" {
 		t.Fatalf("restore invalide: %d %v", st, body)
 	}
-	if st, _ := c.do("GET", "/api/v1/sync/status", nil); st != 501 {
-		t.Fatalf("sync stub: %d", st)
+	if st, stb := c.do("GET", "/api/v1/sync/status", nil); st != 200 || stb["cursor"] == nil {
+		t.Fatalf("sync status: %d %v", st, stb)
 	}
 
 	// photo de réserve : data URL → stockage privé → lecture authentifiée
