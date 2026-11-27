@@ -362,6 +362,43 @@ func TestAPIFullStackIntegration(t *testing.T) {
 		t.Fatalf("inventory contenu: %d %v", st2, inv2)
 	}
 
+	// photo de réserve : data URL → stockage privé → lecture authentifiée
+	photoOrder := map[string]any{
+		"clientId": clID,
+		"items": []map[string]any{{
+			"catalogItemId": "cat-chemise", "name": "Chemise",
+			"mode": "lavage_repassage", "quantity": 1, "unit": "pièce"}},
+		"initialPaymentMethod": "especes",
+		"idempotencyKey":       "ord-photo",
+		"claimPhotos": []map[string]any{{
+			"id": "ph-t1", "caption": "Tache", "itemName": "Chemise",
+			"capturedAt": "2026-11-27T10:00:00Z",
+			"url":        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}},
+	}
+	st, pord := c.do("POST", "/api/v1/orders", photoOrder)
+	if st != 201 {
+		t.Fatalf("order photo: %d %v", st, pord)
+	}
+	phArr, _ := pord["claimPhotos"].([]any)
+	if len(phArr) != 1 {
+		t.Fatalf("claimPhotos vides: %v", pord["claimPhotos"])
+	}
+	phURL := phArr[0].(map[string]any)["url"].(string)
+	if strings.HasPrefix(phURL, "data:") {
+		t.Fatalf("photo data URL stockée en base (interdit): %s", phURL)
+	}
+	reqP, _ := http.NewRequest("GET", ts.URL+phURL, nil)
+	respP, err := c.hc.Do(reqP)
+	if err != nil {
+		t.Fatalf("photo GET: %v", err)
+	}
+	pdata, _ := io.ReadAll(respP.Body)
+	respP.Body.Close()
+	if respP.StatusCode != 200 || len(pdata) == 0 || respP.Header.Get("Content-Type") == "" {
+		t.Fatalf("photo lecture: %d %d octets: %s (url=%s)", respP.StatusCode, len(pdata), string(pdata), phURL)
+	}
+	_ = ordID
+
 	// --- backup export/preview + stubs ---
 	if st, ex := c.do("GET", "/api/v1/backup/export", nil); st != 200 || ex["version"].(float64) != 3 {
 		t.Fatalf("export: %d %v", st, ex)
@@ -402,43 +439,6 @@ func TestAPIFullStackIntegration(t *testing.T) {
 	if st, stb := c.do("GET", "/api/v1/sync/status", nil); st != 200 || stb["cursor"] == nil {
 		t.Fatalf("sync status: %d %v", st, stb)
 	}
-
-	// photo de réserve : data URL → stockage privé → lecture authentifiée
-	photoOrder := map[string]any{
-		"clientId": clID,
-		"items": []map[string]any{{
-			"catalogItemId": "cat-chemise", "name": "Chemise",
-			"mode": "lavage_repassage", "quantity": 1, "unit": "pièce"}},
-		"initialPaymentMethod": "especes",
-		"idempotencyKey":       "ord-photo",
-		"claimPhotos": []map[string]any{{
-			"id": "ph-t1", "caption": "Tache", "itemName": "Chemise",
-			"capturedAt": "2026-11-27T10:00:00Z",
-			"url":        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}},
-	}
-	st, pord := c.do("POST", "/api/v1/orders", photoOrder)
-	if st != 201 {
-		t.Fatalf("order photo: %d %v", st, pord)
-	}
-	phArr, _ := pord["claimPhotos"].([]any)
-	if len(phArr) != 1 {
-		t.Fatalf("claimPhotos vides: %v", pord["claimPhotos"])
-	}
-	phURL := phArr[0].(map[string]any)["url"].(string)
-	if strings.HasPrefix(phURL, "data:") {
-		t.Fatalf("photo data URL stockée en base (interdit): %s", phURL)
-	}
-	reqP, _ := http.NewRequest("GET", ts.URL+phURL, nil)
-	respP, err := c.hc.Do(reqP)
-	if err != nil {
-		t.Fatalf("photo GET: %v", err)
-	}
-	pdata, _ := io.ReadAll(respP.Body)
-	respP.Body.Close()
-	if respP.StatusCode != 200 || len(pdata) == 0 || respP.Header.Get("Content-Type") == "" {
-		t.Fatalf("photo lecture: %d %d octets: %s (url=%s)", respP.StatusCode, len(pdata), string(pdata), phURL)
-	}
-	_ = ordID
 
 	// --- bootstrap ---
 	st, boot := c.do("GET", "/api/v1/bootstrap", nil)
