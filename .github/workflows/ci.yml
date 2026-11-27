@@ -107,11 +107,14 @@ jobs:
       - name: Bootstrap auth de bout en bout (conteneur)
         run: |
           code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/auth/setup \
-            -H 'Content-Type: application/json' -d '{"pinOrPassword":"864275"}')
+            -H 'Content-Type: application/json' -d '{"secret":"86421"}')
           [ "$code" = "204" ] || { echo "setup → $code"; exit 1; }
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/auth/login \
+            -H 'Content-Type: application/json' -d '{"pinOrPassword":"86421"}')
+          [ "$code" = "200" ] || { echo "login → $code"; exit 1; }
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/readyz)
           [ "$code" = "200" ] || exit 1
-          echo "compose OK : db + api + migrations + auth"
+          echo "compose OK : db + api + migrations + setup + login"
       - name: Arrêt propre
         if: always()
         run: docker compose down -v
