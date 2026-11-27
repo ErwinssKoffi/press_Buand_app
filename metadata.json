@@ -1,0 +1,6 @@
+{
+  "name": "Éclat Pressing — Gestion Pressing & Blanchisserie",
+  "description": "Application de gestion hors-ligne pour pressing et blanchisserie en Côte d'Ivoire : dépôts, tickets FCFA, suivi atelier, caisse Mobile Money et base locale.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

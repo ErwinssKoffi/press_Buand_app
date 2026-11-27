@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#0F172A"/>
+  <rect x="44" y="44" width="424" height="424" rx="84" stroke="#0F766E" stroke-width="6" stroke-opacity="0.45"/>
+  <!-- Minimalist Hanger & Press Crest -->
+  <path d="M256 128C236.118 128 220 144.118 220 164C220 178.4 228.45 190.82 240.66 196.6C247.34 199.76 256 204.24 256 212V226" stroke="#FFFFFF" stroke-width="20" stroke-linecap="round"/>
+  <path d="M256 226L118 320C106.5 327.83 112.04 346 125.96 346H386.04C399.96 346 405.5 327.83 394 320L256 226Z" stroke="#14B8A6" stroke-width="20" stroke-linejoin="round"/>
+  <line x1="168" y1="382" x2="344" y2="382" stroke="#FFFFFF" stroke-width="18" stroke-linecap="round"/>
+</svg>
