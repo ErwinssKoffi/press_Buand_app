@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/erwinsskoffi/press_backend/internal/backup"
 	"github.com/erwinsskoffi/press_backend/internal/domain/auth"
 	httph "github.com/erwinsskoffi/press_backend/internal/handler/http"
 	"github.com/erwinsskoffi/press_backend/internal/platform/dbtx"
@@ -74,7 +76,7 @@ func newFullStackServer(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 		service.NewInventoryService(&postgres.InventoryRepo{}, txm, audit),
 		service.NewCashbookService(expenseRepo, txm, audit),
 		service.NewReportsService(&postgres.ReportRepo{}, txm),
-		expenseRepo)
+		expenseRepo, backup.NewService(pool, t.TempDir()))
 	router := chi.NewRouter()
 	api.Routes(router)
 
@@ -354,18 +356,41 @@ func TestAPIFullStackIntegration(t *testing.T) {
 	}
 
 	// --- backup export/preview + stubs ---
-	if st, ex := c.do("GET", "/api/v1/backup/export", nil); st != 200 || ex["schemaVersion"].(float64) != 3 {
-		t.Fatalf("export: %d", st)
+	if st, ex := c.do("GET", "/api/v1/backup/export", nil); st != 200 || ex["version"].(float64) != 3 {
+		t.Fatalf("export: %d %v", st, ex)
 	}
-	if st, pv := c.do("POST", "/api/v1/backup/preview", map[string]any{
-		"schemaVersion": 3, "clients": []any{1, 2}, "orders": []any{}}); st != 200 || pv["clients"].(float64) != 2 {
+	minimal := map[string]any{
+		"version": 3, "exportedAt": "2026-11-27T00:00:00Z",
+		"settings": map[string]any{"id": "default", "shopName": "Test Shop", "nextTicketSequence": 1, "activityScope": "both"},
+		"clients": []any{map[string]any{"id": "cl-x", "fullName": "X", "phone": "1", "createdAt": "2026-01-01T00:00:00Z"},
+			map[string]any{"id": "cl-y", "fullName": "Y", "phone": "2", "createdAt": "2026-01-01T00:00:00Z"}},
+		"orders": []any{},
+	}
+	if st, pv := c.do("POST", "/api/v1/backup/preview", minimal); st != 200 || pv["status"] != "preview" {
 		t.Fatalf("preview: %d %v", st, pv)
 	}
-	if st, body := c.do("POST", "/api/v1/backup/preview", map[string]any{"schemaVersion": 2}); st != 422 || codeOf(body) != "business_rule" {
+	if st, body := c.do("POST", "/api/v1/backup/preview", map[string]any{"version": 2}); st != 422 || codeOf(body) != "business_rule" {
 		t.Fatalf("preview invalide: %d %v", st, body)
 	}
-	if st, _ := c.do("POST", "/api/v1/backup/restore", map[string]any{}); st != 501 {
-		t.Fatalf("restore stub: %d", st)
+	// restore protégé : sans confirmation → 400
+	if st, body := c.do("POST", "/api/v1/backup/restore", minimal); st != 400 {
+		t.Fatalf("restore sans confirm: %d %v", st, body)
+	}
+	// restore confirmé → données remplacées
+	req, _ := http.NewRequest("POST", ts.URL+"/api/v1/backup/restore", bytes.NewReader(mustJSON(minimal)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Backup-Confirm", "true")
+	resp2, err := c.hc.Do(req)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	body2, _ := io.ReadAll(resp2.Body)
+	resp2.Body.Close()
+	if resp2.StatusCode != 200 {
+		t.Fatalf("restore: %d %s", resp2.StatusCode, string(body2))
+	}
+	if st, body := c.do("POST", "/api/v1/backup/restore", map[string]any{}); st != 422 || codeOf(body) != "business_rule" {
+		t.Fatalf("restore invalide: %d %v", st, body)
 	}
 	if st, _ := c.do("GET", "/api/v1/sync/status", nil); st != 501 {
 		t.Fatalf("sync stub: %d", st)
@@ -400,4 +425,9 @@ func codeOf(body map[string]any) string {
 	}
 	s, _ := e["code"].(string)
 	return s
+}
+
+func mustJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
 }

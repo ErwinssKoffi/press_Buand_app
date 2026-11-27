@@ -15,6 +15,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/erwinsskoffi/press_backend/internal/backup"
 	"github.com/erwinsskoffi/press_backend/internal/config"
 	"github.com/erwinsskoffi/press_backend/internal/domain/auth"
 	httph "github.com/erwinsskoffi/press_backend/internal/handler/http"
@@ -119,7 +120,7 @@ func run(log *slog.Logger) error {
 		IdleTimeout:   120 * time.Second,
 		AuthSvc:       authSvc,
 		AuthHandlers:  authH,
-		APIRouter:     buildAPIRouter(httph.NewAPI(orderSvc, settingsSvc, catalogSvc, clientSvc, logisticsSvc, inventorySvc, cashbookSvc, reportsSvc, expenseRepo)),
+		APIRouter:     buildAPIRouter(httph.NewAPI(orderSvc, settingsSvc, catalogSvc, clientSvc, logisticsSvc, inventorySvc, cashbookSvc, reportsSvc, expenseRepo, backup.NewService(pool, cfg.StorageDir))),
 		SecureCookies: cfg.CookieSecure,
 		CookieDomain:  cfg.CookieDomain,
 	})

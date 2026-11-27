@@ -18,7 +18,7 @@ Alignées sur `docs/migration/02-api-contract.md` :
 | Zones | `GET/POST /delivery-zones`, `PUT/DELETE /delivery-zones/{id}` |
 | Logistique | `GET/POST /logistics`, `PATCH /logistics/{id}/status`, `DELETE /logistics/{id}` |
 | Stocks | `GET/POST /inventory`, `PUT/DELETE /inventory/{id}` (DELETE = archive), `GET/POST /inventory/{id}/movements` |
-| Backup | `GET /backup/export` (v3), `POST /backup/preview`, `POST /backup/restore` → **501** (Prompt 08) |
+| Backup | `GET /backup/export` (v3), `POST /backup/preview` (validation réelle simplifiée), `POST /backup/restore` → **501** (livré au Prompt 07) |
 | Sync | `POST /sync/push`, `GET /sync/pull`, `GET /sync/status` → **501** (Prompt 09) |
 
 ## 2. DTO et conventions

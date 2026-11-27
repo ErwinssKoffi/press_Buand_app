@@ -71,16 +71,25 @@ curl -b jar.txt "http://127.0.0.1:8080/api/v1/reports/monthly?month=2026-11"
 # 10. Bootstrap de démarrage (fenêtre 90 jours)
 curl -b jar.txt "http://127.0.0.1:8080/api/v1/bootstrap?windowDays=90"
 
-# 11. Export backup v3 + preview
-curl -b jar.txt http://127.0.0.1:8080/api/v1/backup/export > backup.json
+# 11. Export backup v3, preview puis restauration d'un backup legacy (Prompt 07)
+#     Toujours : preview (aucune écriture) → lecture du rapport → restore confirmé.
+curl -b jar.txt http://127.0.0.1:8080/api/v1/backup/export > serveur.json
 curl -b jar.txt -X POST http://127.0.0.1:8080/api/v1/backup/preview \
-  -H "Content-Type: application/json" --data-binary @backup.json
+  -H "Content-Type: application/json" --data-binary @eclat-backup-legacy.json
+# sans confirmation → 400 invalid_request (deux étapes obligatoires)
+curl -b jar.txt -X POST http://127.0.0.1:8080/api/v1/backup/restore \
+  -H "Content-Type: application/json" --data-binary @eclat-backup-legacy.json
+# confirmé → 200 {"status":"restauré","created":{…},"serverBackup":"…/pre-restore-….json"}
+# re-import du même fichier → {"status":"déjà appliqué"} (hash SHA-256 idempotent)
+curl -b jar.txt -X POST http://127.0.0.1:8080/api/v1/backup/restore \
+  -H "Content-Type: application/json" -H "X-Backup-Confirm: true" \
+  --data-binary @eclat-backup-legacy.json
 
 # 12. Annulation non destructive
 curl -b jar.txt -X POST http://127.0.0.1:8080/api/v1/orders/$ORDER_ID/void \
   -H "Content-Type: application/json" -d '{"reason":"erreur de saisie"}'
 ```
 
-Codes utiles : `400 invalid_request` (validation), `401 unauthorized`, `404 not_found`,
-`409 conflict` (rejeu idempotent), `422 business_rule` (règles métier), `501 not_implemented`
-(backup/restore → phase 08, sync → phase 09).
+Codes utiles : `400 invalid_request` (validation, restore sans confirmation), `401 unauthorized`,
+`404 not_found`, `409 conflict` (rejeu idempotent), `422 business_rule` (règles métier,
+backup v3 invalide), `501 not_implemented` (sync → phase 09).

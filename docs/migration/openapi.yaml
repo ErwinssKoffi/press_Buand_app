@@ -309,9 +309,23 @@ paths:
   /backup/restore:
     post:
       tags: [backup]
-      summary: Restauration atomique (audité) — livrée au Prompt 08
-      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
-      responses: {'501': {description: not_implemented (phase 08)}}
+      summary: Restauration atomique idempotente (Prompt 07)
+      description: |
+        Remplace les données métier par le backup legacy v3. Deux étapes obligatoires :
+        1. POST /backup/preview (aucune écriture) ; 2. ce endpoint avec l'en-tête
+        X-Backup-Confirm: true. Sauvegarde serveur préalable (fichier JSON),
+        transaction unique, IDs historiques préservés, photos décodées vers le stockage
+        privé, PIN legacy importé en état "legacy" (upgrade Argon2id au premier login),
+        hash enregistré : re-import du même backup → rapport "déjà appliqué" (200)
+        sauf X-Backup-Force: true. 422 si le backup est invalide, 400 sans confirmation.
+      parameters:
+        - {name: X-Backup-Confirm, in: header, schema: {type: string, enum: ['true']}, required: false}
+        - {name: X-Backup-Force, in: header, schema: {type: string, enum: ['true']}, required: false}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DatabaseBackupV3'}}}}
+      responses:
+        '200': {description: Rapport de migration (restauré | déjà appliqué | échec détaillé), content: {application/json: {schema: {$ref: '#/components/schemas/MigrationReport'}}}}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '422': {$ref: '#/components/responses/BusinessRule'}
   /sync/push:
     post:
       tags: [sync]
@@ -629,14 +643,44 @@ components:
         paymentMethod: {$ref: '#/components/schemas/PaymentMethod'}
     BackupPreview:
       type: object
+      description: Rapport de preview/restore (Prompt 07) — rapport de migration complet.
       properties:
-        valid: {type: boolean}
-        version: {type: integer}
-        counts: {type: object, additionalProperties: {type: integer}}
+        hash: {type: string, description: SHA-256 du corps du backup (clé d'idempotence)}
+        status: {type: string, enum: [preview, déjà appliqué, restauré, échec]}
+        exportedAt: {type: string}
+        source: {type: object, additionalProperties: {type: integer}, description: lignes source par entité}
+        created: {type: object, additionalProperties: {type: integer}}
+        updated: {type: object, additionalProperties: {type: integer}}
+        ignored: {type: object, additionalProperties: {type: integer}}
         duplicates: {type: array, items: {type: string}}
-        anomalies: {type: array, items: {type: string}}
-        photosToImport: {type: integer}
-        pinMigration: {type: string, enum: [none, legacy_rehash, missing]}
+        anomalies: {type: array, items: {type: string}, description: relations cassées tolérées (conservées)}
+        incompatibilities: {type: array, items: {type: string}, description: avertissements (ex. données réelles déjà présentes)}
+        photosImported: {type: integer}
+        photosSkipped: {type: integer}
+        pinLegacyImported: {type: boolean}
+        serverBackup: {type: string, description: chemin du fichier de sauvegarde pré-restauration}
+        errors: {type: array, items: {type: string}}
+        startedAt: {type: string}
+        finishedAt: {type: string}
+    MigrationReport:
+      $ref: '#/components/schemas/BackupPreview'
+    DatabaseBackupV3:
+      type: object
+      description: Format legacy DatabaseBackup v3 (src/types/pressing.ts).
+      required: [version, exportedAt, settings, clients, catalog, orders, payments, expenses]
+      properties:
+        version: {type: integer, enum: [3]}
+        exportedAt: {type: string, format: date-time}
+        settings: {type: object}
+        clients: {type: array, items: {type: object}}
+        catalog: {type: array, items: {type: object}}
+        orders: {type: array, items: {type: object}}
+        payments: {type: array, items: {type: object}}
+        expenses: {type: array, items: {type: object}}
+        zones: {type: array, items: {type: object}}
+        logistics: {type: array, items: {type: object}}
+        inventory: {type: array, items: {type: object}}
+        inventoryMovements: {type: array, items: {type: object}}
     SyncOperationIn:
       type: object
       required: [operationId, type, payload]

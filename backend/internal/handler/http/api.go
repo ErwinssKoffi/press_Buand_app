@@ -4,14 +4,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/erwinsskoffi/press_backend/internal/backup"
 	"github.com/erwinsskoffi/press_backend/internal/domain/pressing"
 	"github.com/erwinsskoffi/press_backend/internal/service"
 )
@@ -28,12 +31,14 @@ type API struct {
 	cashbook  *service.CashbookService
 	reports   *service.ReportsService
 	expenses  service.ExpenseStore
+	backup    *backup.Service
 }
 
 func NewAPI(orders *service.OrderService, settings *service.SettingsService, catalog *service.CatalogService,
 	clients *service.ClientService, logistics *service.LogisticsService, inventory *service.InventoryService,
-	cashbook *service.CashbookService, reports *service.ReportsService, expenses service.ExpenseStore) *API {
-	return &API{orders, settings, catalog, clients, logistics, inventory, cashbook, reports, expenses}
+	cashbook *service.CashbookService, reports *service.ReportsService, expenses service.ExpenseStore,
+	backup *backup.Service) *API {
+	return &API{orders, settings, catalog, clients, logistics, inventory, cashbook, reports, expenses, backup}
 }
 
 // Routes monte toutes les routes métier du contrat.
@@ -96,10 +101,10 @@ func (a *API) Routes(r chi.Router) {
 	r.Get("/inventory/{id}/movements", a.listMovements)
 	r.Post("/inventory/{id}/movements", a.movement)
 
-	// backup (export/preview réels ; restore finalisé au Prompt 08)
+	// backup (export/preview/restore réels — Prompt 07)
 	r.Get("/backup/export", a.backupExport)
 	r.Post("/backup/preview", a.backupPreview)
-	r.Post("/backup/restore", a.notImplemented("backup.restore", "Prompt 08"))
+	r.Post("/backup/restore", a.backupRestore)
 	// sync (préparée ici, finalisée au Prompt 09)
 	r.Post("/sync/push", a.notImplemented("sync.push", "Prompt 09"))
 	r.Get("/sync/pull", a.notImplemented("sync.pull", "Prompt 09"))
@@ -817,86 +822,80 @@ func (a *API) monthlyReport(w http.ResponseWriter, r *http.Request) {
 
 // --- backup (export/preview réels ; restore = Prompt 08) ---
 
+// backupExport : export JSON compatible DatabaseBackup v3 (transition frontend).
 func (a *API) backupExport(w http.ResponseWriter, r *http.Request) {
-	settings, err := a.settings.Get(r.Context())
+	export, err := a.backup.ExportV3(r.Context())
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	catalog, err := a.catalog.List(r.Context(), false)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	zones, err := a.logistics.Zones(r.Context())
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	clients, _, err := a.clients.List(r.Context(), "", 1, 200)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	orders, _, err := a.orders.List(r.Context(), pressing.OrderFilter{Page: 1, PageSize: 200})
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	inventory, err := a.inventory.List(r.Context())
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	movements, err := a.inventory.Movements(r.Context(), "", 500)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	expenses, _, err := a.cashbook.Expenses(r.Context(), "", "", 1, 200)
-	if err != nil {
-		fail(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"schemaVersion":      3,
-		"exportedAt":         time.Now().UTC().Format(time.RFC3339),
-		"settings":           settings,
-		"catalog":            catalog,
-		"clients":            clients,
-		"orders":             orders,
-		"expenses":           expenses,
-		"zones":              zones,
-		"inventory":          inventory,
-		"inventoryMovements": movements,
-	})
+	writeJSON(w, http.StatusOK, export)
 }
 
 func (a *API) backupPreview(w http.ResponseWriter, r *http.Request) {
-	var payload map[string]any
-	if err := decodeBody(w, r, &payload); err != nil {
+	body, err := readRawBody(w, r)
+	if err != nil {
 		return
 	}
-	report := map[string]any{}
-	v, ok := payload["schemaVersion"].(float64)
-	if !ok || int(v) != 3 {
-		WriteError(w, http.StatusUnprocessableEntity, "business_rule",
-			"schemaVersion v3 attendu.", map[string]any{"received": payload["schemaVersion"]})
+	b, hash, err := backup.Parse(body)
+	if err != nil {
+		WriteError(w, http.StatusUnprocessableEntity, "business_rule", err.Error(), nil)
 		return
 	}
-	for _, k := range []string{"settings", "catalog", "clients", "orders", "expenses", "zones", "inventory"} {
-		switch arr := payload[k].(type) {
-		case []any:
-			report[k] = len(arr)
-		case map[string]any:
-			report[k] = 1
-		default:
-			report[k] = 0
-		}
+	rep, err := a.backup.Preview(r.Context(), b, hash)
+	if err != nil {
+		fail(w, err)
+		return
 	}
-	report["anomalies"] = []string{}
-	report["status"] = "valide"
-	writeJSON(w, http.StatusOK, report)
+	writeJSON(w, http.StatusOK, rep)
+}
+
+// backupRestore : restauration protégée (confirm:true requis) — atomique,
+// sauvegarde serveur préalable, hash idempotent.
+func (a *API) backupRestore(w http.ResponseWriter, r *http.Request) {
+	body, err := readRawBody(w, r)
+	if err != nil {
+		return
+	}
+	// confirm peut voyager dans un en-tête (le corps doit rester le backup pur)
+	confirm := r.Header.Get("X-Backup-Confirm") == "true"
+	b, hash, err := backup.Parse(body)
+	if err != nil {
+		WriteError(w, http.StatusUnprocessableEntity, "business_rule", err.Error(), nil)
+		return
+	}
+	if !confirm {
+		WriteError(w, http.StatusBadRequest, "invalid_request",
+			"Confirmation requise : renvoyez la requête avec l'en-tête X-Backup-Confirm: true après avoir consulté le preview.", nil)
+		return
+	}
+	// idempotence : même hash déjà restauré → rapport conservé, aucune réécriture
+	if prev, found, err := a.backup.FindImport(r.Context(), hash); err == nil && found && !forceOf(r) {
+		prev.Status = "déjà appliqué"
+		writeJSON(w, http.StatusOK, prev)
+		return
+	}
+	serverBackup := filepath.Join(a.backup.StorageDir(), "backups",
+		"pre-restore-"+time.Now().UTC().Format("20060102T150405")+".json")
+	rep, err := a.backup.Restore(r.Context(), b, hash, serverBackup)
+	if err != nil {
+		writeJSON(w, http.StatusOK, rep) // rapport d'échec détaillé (rien écrit)
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
+}
+
+func forceOf(r *http.Request) bool {
+	return r.Header.Get("X-Backup-Force") == "true"
+}
+
+func readRawBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<20))
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "Corps illisible ou trop volumineux (max 64 Mo).", nil)
+		return nil, err
+	}
+	return raw, nil
 }
 
 func (a *API) notImplemented(feature, phase string) http.HandlerFunc {
