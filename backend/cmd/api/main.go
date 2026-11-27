@@ -14,9 +14,13 @@ import (
 	"time"
 
 	"github.com/erwinsskoffi/press_backend/internal/config"
+	"github.com/erwinsskoffi/press_backend/internal/domain/auth"
+	httph "github.com/erwinsskoffi/press_backend/internal/handler/http"
 	"github.com/erwinsskoffi/press_backend/internal/platform/database"
 	"github.com/erwinsskoffi/press_backend/internal/platform/migrate"
+	"github.com/erwinsskoffi/press_backend/internal/repository/postgres"
 	"github.com/erwinsskoffi/press_backend/internal/server"
+	"github.com/erwinsskoffi/press_backend/internal/service"
 )
 
 func main() {
@@ -38,6 +42,7 @@ func run(log *slog.Logger) error {
 	ctx := context.Background()
 
 	pool, err := database.Connect(ctx, cfg.DatabaseURL)
+	_ = pool
 	if err != nil {
 		return err
 	}
@@ -59,18 +64,35 @@ func run(log *slog.Logger) error {
 		log.Info("migrations appliquées", "versions", applied)
 	}
 
+	repo := postgres.New(pool)
+
 	if err := os.MkdirAll(cfg.StorageDir, 0o750); err != nil {
 		return err
 	}
 
+	// Auth : credentials + sessions + audit
+	auditRepo := postgres.NewAuditRepo(pool)
+	authPolicy := auth.Policy{
+		MaxAttempts:  cfg.LoginMaxAttempts,
+		Lockout:      cfg.LoginLockout,
+		AllowWeakPIN: cfg.AllowWeakPIN,
+		SessionTTL:   cfg.SessionTTL,
+	}
+	authSvc := service.NewAuthService(repo.Auth, repo.Auth, auditRepo, authPolicy)
+	authH := httph.NewAuthHandlers(authSvc, cfg.CookieSecure, cfg.CookieDomain)
+
 	srv := server.New(server.Deps{
-		Pool:         pool,
-		Log:          log,
-		CORSOrigins:  cfg.CORSOrigins,
-		BodyLimit:    cfg.BodyLimitBytes,
-		ReadTimeout:  20 * time.Second,
-		WriteTimeout: 60 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		Pool:          pool,
+		Log:           log,
+		CORSOrigins:   cfg.CORSOrigins,
+		BodyLimit:     cfg.BodyLimitBytes,
+		ReadTimeout:   20 * time.Second,
+		WriteTimeout:  60 * time.Second,
+		IdleTimeout:   120 * time.Second,
+		AuthSvc:       authSvc,
+		AuthHandlers:  authH,
+		SecureCookies: cfg.CookieSecure,
+		CookieDomain:  cfg.CookieDomain,
 	})
 	srv.Addr = cfg.HTTPAddr
 

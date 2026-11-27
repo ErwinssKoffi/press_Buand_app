@@ -6,10 +6,13 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/erwinsskoffi/press_backend/internal/platform/itest"
 )
 
 func testPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	itest.LockTestDB(t)
 	dsn := os.Getenv("ECLAT_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("ECLAT_TEST_DATABASE_URL non défini : test d'intégration sauté")

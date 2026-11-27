@@ -11,23 +11,33 @@ import (
 
 	httph "github.com/erwinsskoffi/press_backend/internal/handler/http"
 	"github.com/erwinsskoffi/press_backend/internal/middleware"
+	"github.com/erwinsskoffi/press_backend/internal/service"
 )
 
 // Deps rassemble les dépendances du serveur HTTP.
 type Deps struct {
-	Pool         *pgxpool.Pool
-	Log          *slog.Logger
-	CORSOrigins  []string
-	BodyLimit    int64
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
-	Auth         http.Handler // handler d'auth (routes /auth/*) — injecté à la phase 04
-	API          http.Handler // routes métier authentifiées — injecté à la phase 06
+	Pool          *pgxpool.Pool
+	Log           *slog.Logger
+	CORSOrigins   []string
+	BodyLimit     int64
+	ReadTimeout   time.Duration
+	WriteTimeout  time.Duration
+	IdleTimeout   time.Duration
+	AuthSvc       *service.AuthService // nil = phase 03 uniquement (tests)
+	AuthHandlers  *httph.AuthHandlers
+	API           http.Handler // routes métier /api/v1 (phase 06+)
+	SecureCookies bool
+	CookieDomain  string
 }
 
 // New construit le serveur HTTP complet.
 func New(d Deps) *http.Server {
+	if d.Log == nil {
+		d.Log = slog.Default()
+	}
+	if d.BodyLimit <= 0 {
+		d.BodyLimit = 10 * 1024 * 1024
+	}
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestIDGen)
@@ -41,12 +51,21 @@ func New(d Deps) *http.Server {
 	r.Get("/healthz", health.Healthz)
 	r.Get("/readyz", health.Readyz)
 
-	// Les routes métier sont montées par les phases suivantes.
-	if d.Auth != nil {
-		r.Mount("/", d.Auth)
-	}
-	if d.API != nil {
-		r.Mount("/api/v1", d.API)
+	if d.AuthSvc != nil && d.AuthHandlers != nil {
+		// routes d'auth publiques (setup/login/status) + logout/me
+		r.Group(func(r chi.Router) {
+			r.Use(httph.OriginGuard(d.CORSOrigins))
+			d.AuthHandlers.Mount(r)
+		})
+
+		// routes métier protégées par session
+		api := chi.NewRouter()
+		api.Use(httph.OriginGuard(d.CORSOrigins))
+		api.Use(httph.RequireAuth(d.AuthSvc))
+		if d.API != nil {
+			api.Mount("/", d.API)
+		}
+		r.Mount("/api/v1", api)
 	}
 
 	r.NotFound(func(w http.ResponseWriter, r *http.Request) {
