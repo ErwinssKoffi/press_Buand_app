@@ -64,9 +64,22 @@ sauvegarde/restauration : `docs/deployment/BACKUP-RESTORE.md`.
 
 ## Environnements à réseau restreint (CI isolée)
 
-`go.mod`/`go.sum` utilisent les chemins de modules canoniques (`golang.org/x/*`) ;
-aucun `replace` spécifique n'est requis. Dans un environnement à réseau restreint
-(sandbox sans accès à proxy.golang.org), le graphe se résout via un proxy GOPROXY
-miroir servant les mêmes archives canoniques (outil utilisé lors de la migration,
-conservé hors dépôt — voir `docs/migration/03-backend-scaffold.md`) : il suffit de
-lancer `GOPROXY=<miroir> go build ./...`, les sommes de `go.sum` restent valides.
+`go.mod`/`go.sum` sont **canoniques** (chemins `golang.org/x/*`, sommes vérifiées
+contre `sum.golang.org` en CI) : aucun `replace` spécifique dans les fichiers
+committés. Dans un environnement à réseau restreint sans accès à proxy.golang.org,
+on utilise une **variante `-modfile`** générée à la demande (non committée,
+gitignorée) qui remappe `golang.org/x/* → github.com/golang/*` (miroir officiel)
+avec les sommes du miroir local :
+
+```bash
+# à faire une seule fois dans le clone restreint (sandbox de migration) :
+cp go.mod sandbox.go.mod
+# + bloc replace golang.org/x/* => github.com/golang/* (voir git log)
+GOPROXY=<miroir-local> GOSUMDB=off go mod tidy -modfile=sandbox.go.mod
+
+# puis toutes les commandes Go avec :
+export GOFLAGS=-modfile=sandbox.go.mod
+go vet ./... && go test ./...
+```
+
+Voir `docs/migration/03-backend-scaffold.md` pour l'outil de proxy local.
