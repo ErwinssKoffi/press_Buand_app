@@ -63,7 +63,8 @@ jobs:
         run: |
           code=0
           go test ./... -count=1 > /tmp/test.log 2>&1 || code=$?
-          echo "::error title=go test::$(grep -E '^(FAIL|---)' /tmp/test.log | head -8 | tr '\n' ';')"
+          detail="$(grep -B1 -A14 'FAIL: ' /tmp/test.log | head -30 | tr '\n' ';')"
+          echo "::error title=go test::${detail:-$(tail -c 800 /tmp/test.log | tr '\n' ';')}"
           exit $code
       - name: Build image backend
         working-directory: backend
