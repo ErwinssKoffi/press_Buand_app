@@ -226,6 +226,7 @@ export const DEFAULT_SETTINGS: PressingSettings = {
   blanchisserieConfig: DEFAULT_BLANCHISSERIE_CONFIG,
   pressingConfig: DEFAULT_PRESSING_CONFIG,
   loyaltyConfig: DEFAULT_LOYALTY_CONFIG,
+  onboardingCompleted: false,
 };
 
 export function normalizeSettings(raw?: Partial<PressingSettings> | null): PressingSettings {
@@ -339,6 +340,9 @@ export function normalizeSettings(raw?: Partial<PressingSettings> | null): Press
         )
       ),
     },
+    pinHash: raw?.pinHash || undefined,
+    pinSalt: raw?.pinSalt || undefined,
+    onboardingCompleted: raw?.onboardingCompleted ?? false,
   };
 }
 
@@ -1661,7 +1665,9 @@ export async function clearAllBusinessData(): Promise<void> {
     tx.objectStore('logistics').clear(),
     tx.objectStore('inventoryMovements').clear(),
   ]);
-  const existingSettings = (await tx.objectStore('settings').get('default')) ?? DEFAULT_SETTINGS;
+  const existingSettings = normalizeSettings(
+    (await tx.objectStore('settings').get('default')) ?? DEFAULT_SETTINGS
+  );
   await tx.objectStore('settings').put({ ...existingSettings, nextTicketSequence: 1 });
   await tx.done;
 }

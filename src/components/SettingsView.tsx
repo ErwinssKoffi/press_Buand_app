@@ -1,5 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Check, Download, HardDrive, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
+import {
+  Check,
+  Download,
+  HardDrive,
+  KeyRound,
+  Plus,
+  RotateCcw,
+  SlidersHorizontal,
+  Trash2,
+  Upload,
+} from 'lucide-react';
 import {
   BlanchisseriePack,
   BlanchisserieService,
@@ -19,6 +29,12 @@ import {
   SERVICE_MODE_LABELS,
   SHOP_ACTIVITY_LABELS,
 } from '../utils/formatters';
+import {
+  generatePinSaltHex,
+  hashFiveDigitPin,
+  isValidFiveDigitPin,
+  verifyFiveDigitPin,
+} from '../utils/pinAuth';
 
 interface SettingsViewProps {
   settings: PressingSettings;
@@ -28,6 +44,7 @@ interface SettingsViewProps {
   onImportBackup: (backup: DatabaseBackup) => Promise<void>;
   onClearAllData: () => Promise<void>;
   onResetDemoData: () => Promise<void>;
+  onReopenOnboarding?: () => void;
 }
 
 const ACTIVITY_OPTIONS: {
@@ -60,12 +77,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onImportBackup,
   onClearAllData,
   onResetDemoData,
+  onReopenOnboarding,
 }) => {
   const [form, setForm] = useState<PressingSettings>(() => normalizeSettings(settings));
   const [savedToast, setSavedToast] = useState(false);
   const [configError, setConfigError] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
   const [confirmAction, setConfirmAction] = useState<'clear' | 'reset' | null>(null);
+  const [currentPin, setCurrentPin] = useState('');
+  const [newPin, setNewPin] = useState('');
+  const [confirmNewPin, setConfirmNewPin] = useState('');
+  const [pinError, setPinError] = useState('');
+  const [pinSavedMsg, setPinSavedMsg] = useState('');
+  const [savingPin, setSavingPin] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -306,6 +330,53 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       setStatusMessage('Impossible de lire ce fichier JSON.');
     } finally {
       e.target.value = '';
+    }
+  };
+
+  const handleUpdatePin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPinError('');
+    setPinSavedMsg('');
+    const cleanNew = newPin.replace(/\D/g, '');
+    const cleanConfirm = confirmNewPin.replace(/\D/g, '');
+
+    if (settings.pinHash && settings.pinSalt) {
+      const ok = await verifyFiveDigitPin(
+        currentPin.replace(/\D/g, ''),
+        settings.pinSalt,
+        settings.pinHash
+      );
+      if (!ok) {
+        setPinError('Le code PIN actuel est incorrect.');
+        return;
+      }
+    }
+
+    if (!isValidFiveDigitPin(cleanNew)) {
+      setPinError('Le nouveau code PIN doit contenir exactement 5 chiffres.');
+      return;
+    }
+    if (cleanNew !== cleanConfirm) {
+      setPinError('La confirmation du nouveau code PIN ne correspond pas.');
+      return;
+    }
+
+    setSavingPin(true);
+    try {
+      const nextSalt = generatePinSaltHex(16);
+      const nextHash = await hashFiveDigitPin(cleanNew, nextSalt);
+      const updated = normalizeSettings({
+        ...form,
+        pinHash: nextHash,
+        pinSalt: nextSalt,
+      });
+      await onSaveSettings(updated);
+      setCurrentPin('');
+      setNewPin('');
+      setConfirmNewPin('');
+      setPinSavedMsg('Code PIN à 5 chiffres mis à jour.');
+    } finally {
+      setSavingPin(false);
     }
   };
 
@@ -1159,6 +1230,107 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <span>Recharger démo Abidjan</span>
             </button>
           </div>
+        </div>
+
+        {/* Sécurité PIN 5 chiffres & Relance Onboarding */}
+        <div className="rounded-xl border border-slate-200 bg-white p-6 space-y-4">
+          <div className="flex items-start gap-3 border-b border-slate-100 pb-4">
+            <KeyRound className="h-5 w-5 text-teal-700 shrink-0 mt-0.5" />
+            <div>
+              <h2 className="text-base font-semibold text-slate-900">
+                Sécurité &amp; Assistant de configuration
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Modifiez votre code PIN de connexion à 5 chiffres ou relancez l&apos;assistant initial
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleUpdatePin} className="space-y-3">
+            {settings.pinHash && settings.pinSalt && (
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Code PIN actuel (5 chiffres)
+                </label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={5}
+                  value={currentPin}
+                  onChange={(e) => {
+                    setPinError('');
+                    setPinSavedMsg('');
+                    setCurrentPin(e.target.value.replace(/\D/g, '').slice(0, 5));
+                  }}
+                  placeholder="•••••"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm tracking-widest focus:border-teal-600 focus:outline-none"
+                />
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Nouveau PIN (5 chiffres)
+                </label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={5}
+                  value={newPin}
+                  onChange={(e) => {
+                    setPinError('');
+                    setPinSavedMsg('');
+                    setNewPin(e.target.value.replace(/\D/g, '').slice(0, 5));
+                  }}
+                  placeholder="•••••"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm tracking-widest focus:border-teal-600 focus:outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">
+                  Confirmer le PIN
+                </label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={5}
+                  value={confirmNewPin}
+                  onChange={(e) => {
+                    setPinError('');
+                    setPinSavedMsg('');
+                    setConfirmNewPin(e.target.value.replace(/\D/g, '').slice(0, 5));
+                  }}
+                  placeholder="•••••"
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm tracking-widest focus:border-teal-600 focus:outline-none"
+                />
+              </div>
+            </div>
+
+            {pinError && <p className="text-xs font-medium text-red-700">{pinError}</p>}
+            {pinSavedMsg && <p className="text-xs font-medium text-emerald-700">{pinSavedMsg}</p>}
+
+            <button
+              type="submit"
+              disabled={savingPin}
+              className="rounded-lg bg-slate-900 px-4 py-2 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
+            >
+              {savingPin ? 'Mise à jour...' : 'Mettre à jour le code PIN'}
+            </button>
+          </form>
+
+          {onReopenOnboarding && (
+            <div className="border-t border-slate-100 pt-4">
+              <button
+                type="button"
+                onClick={onReopenOnboarding}
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3.5 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 cursor-pointer"
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5 text-teal-700" />
+                <span>Relancer l&apos;assistant de configuration (Onboarding)</span>
+              </button>
+            </div>
+          )}
         </div>
       </section>
     </div>

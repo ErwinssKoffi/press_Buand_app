@@ -294,6 +294,9 @@ export interface PressingSettings {
   blanchisserieConfig: BlanchisserieConfig;
   pressingConfig: PressingConfig;
   loyaltyConfig?: LoyaltyConfig;
+  pinHash?: string;
+  pinSalt?: string;
+  onboardingCompleted?: boolean;
 }
 
 export interface DatabaseBackup {

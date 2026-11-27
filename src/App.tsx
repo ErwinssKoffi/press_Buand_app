@@ -4,6 +4,7 @@ import {
   BookOpen,
   ClipboardList,
   LayoutDashboard,
+  Lock,
   Menu,
   Package,
   PlusCircle,
@@ -73,6 +74,8 @@ import { CatalogView } from './components/CatalogView';
 import { InventoryView } from './components/InventoryView';
 import { CashbookView } from './components/CashbookView';
 import { SettingsView } from './components/SettingsView';
+import { LoginView } from './components/LoginView';
+import { OnboardingView } from './components/OnboardingView';
 
 const NAV_ITEMS: { id: AppTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'dashboard', label: 'Tableau de bord', icon: LayoutDashboard },
@@ -106,6 +109,8 @@ export default function App() {
   const [preselectedClientId, setPreselectedClientId] = useState<string | null>(null);
   const [pickupContext, setPickupContext] = useState<LogisticsTask | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [isUnlocked, setIsUnlocked] = useState(false);
+  const [forceOnboarding, setForceOnboarding] = useState(false);
 
   const refreshData = useCallback(async () => {
     const data = await loadAllData();
@@ -312,7 +317,82 @@ export default function App() {
     await refreshData();
   };
 
+  const handleSetupPin = async (pinHash: string, pinSalt: string) => {
+    await saveSettings({ ...settings, pinHash, pinSalt });
+    await refreshData();
+  };
+
+  const handleResetPin = async () => {
+    await saveSettings({ ...settings, pinHash: undefined, pinSalt: undefined });
+    await refreshData();
+  };
+
+  const handleCompleteOnboarding = async (
+    nextSettings: PressingSettings,
+    options: { startFresh: boolean }
+  ) => {
+    if (options.startFresh) {
+      await clearAllBusinessData();
+    }
+    await saveSettings({
+      ...nextSettings,
+      pinHash: settings.pinHash,
+      pinSalt: settings.pinSalt,
+      onboardingCompleted: true,
+    });
+    await refreshData();
+    setForceOnboarding(false);
+    setActiveTab('dashboard');
+  };
+
+  const handleSkipOnboarding = async () => {
+    await saveSettings({ ...settings, onboardingCompleted: true });
+    await refreshData();
+    setForceOnboarding(false);
+    setActiveTab('dashboard');
+  };
+
   const activeNav = NAV_ITEMS.find((n) => n.id === activeTab)!;
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 space-y-4">
+          <div className="h-5 w-44 rounded bg-slate-200" />
+          <div className="h-3 w-64 rounded bg-slate-100" />
+          <div className="h-12 w-full rounded-xl bg-slate-100" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!isUnlocked) {
+    return (
+      <>
+        <LoginView
+          settings={settings}
+          onSetupPin={handleSetupPin}
+          onUnlockSuccess={() => setIsUnlocked(true)}
+          onResetPin={handleResetPin}
+        />
+        <OfflineBanner />
+      </>
+    );
+  }
+
+  if (!settings.onboardingCompleted || forceOnboarding) {
+    return (
+      <>
+        <OnboardingView
+          settings={settings}
+          ordersCount={orders.length}
+          onCompleteOnboarding={handleCompleteOnboarding}
+          onSkipOnboarding={handleSkipOnboarding}
+        />
+        <OfflineBanner />
+      </>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex">
@@ -428,6 +508,18 @@ export default function App() {
             >
               <ScanBarcode className="h-3.5 w-3.5 text-teal-700" />
               <span className="hidden sm:inline">Scanner ticket</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setForceOnboarding(false);
+                setIsUnlocked(false);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              title="Verrouiller le comptoir (PIN 5 chiffres)"
+            >
+              <Lock className="h-3.5 w-3.5 text-slate-600" />
+              <span className="hidden sm:inline">Verrouiller</span>
             </button>
             <PWAInstallButton />
             {activeTab !== 'pos' && (
@@ -574,6 +666,7 @@ export default function App() {
                   onImportBackup={handleImportBackup}
                   onClearAllData={handleClearAllData}
                   onResetDemoData={handleResetDemoData}
+                  onReopenOnboarding={() => setForceOnboarding(true)}
                 />
               )}
             </>
