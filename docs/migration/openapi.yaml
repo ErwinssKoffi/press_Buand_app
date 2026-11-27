@@ -130,35 +130,51 @@ paths:
     post:
       tags: [orders]
       summary: Création dépôt (recalcul serveur autoritaire)
-      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
+      description: Idempotency-Key requis (en-tête, ou champ `idempotencyKey` du corps). Rejeu → 409 conflict.
+      parameters: [{name: Idempotency-Key, in: header, required: false, schema: {type: string}}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OrderDraft'}}}}
       responses:
-        '200': {description: Créée, content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}
+        '201': {description: Créée, content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}
+        '400': {description: Idempotency-Key manquant ou corps invalide}
         '404': {description: Client/zone/article introuvable}
-        '422': {description: business_rule (stock, prépayé insuffisant, secret faible…)}
+        '409': {description: Idempotency-Key déjà appliquée}
+        '422': {description: business_rule (tarification, zone, prépayé…)}
+  /orders/mapping:
+    post:
+      tags: [orders]
+      summary: Aperçu tarifaire (aucune écriture)
+      description: Recalcul complet avec les données réelles (solde client chargé) ; renvoie {order, actualPrepaidUsedFCFA, cashDueFCFA, cashPaidFCFA, loyaltyDiscountFCFA}.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OrderDraft'}}}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object}}}}, '422': {}}
   /orders/{id}:
     get:
       tags: [orders]
       summary: Détail commande (items + photos)
       parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
       responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}, '404': {}}
+  /orders/{id}/payments:
+    get:
+      tags: [orders]
+      summary: Journal des paiements de la commande
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Payment'}}}}}}
+    post:
+      tags: [orders]
+      summary: Encaissement (rejet si > solde)
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}, {name: Idempotency-Key, in: header, required: false, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [amountFCFA, method], properties: {amountFCFA: {type: integer, minimum: 1}, method: {$ref: '#/components/schemas/PaymentMethod'}, idempotencyKey: {type: string}}}}}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}
+        '400': {description: Idempotency-Key manquant}
+        '409': {description: commande annulée ou clé déjà appliquée}
+        '422': {description: surpaiement (business_rule)}
   /orders/{id}/status:
     patch:
       tags: [orders]
       summary: Avancement statut
       parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
       requestBody: {required: true, content: {application/json: {schema: {type: object, required: [status], properties: {status: {$ref: '#/components/schemas/OrderStatus'}}}}}}
-      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}, '409': {description: transition invalide ou commande annulée}}
-  /orders/{id}/payments:
-    post:
-      tags: [orders]
-      summary: Encaissement (rejet si > solde)
-      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}, {name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
-      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [amountFCFA, method], properties: {amountFCFA: {type: integer, minimum: 1}, method: {$ref: '#/components/schemas/PaymentMethod'}}}}}}
-      responses:
-        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}
-        '409': {description: commande annulée}
-        '422': {description: surpaiement (business_rule)}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}, '422': {description: transition invalide ou commande annulée (business_rule)}}
   /orders/{id}/void:
     post:
       tags: [orders]
@@ -273,8 +289,9 @@ paths:
     post:
       tags: [inventory]
       summary: Mouvement de stock (+dépense auto optionnelle, même tx)
-      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}, {name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}, {name: Idempotency-Key, in: header, required: false, schema: {type: string}}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/MovementIn'}}}}
+      description: Idempotency-Key requis (en-tête ou champ idempotencyKey) ; rejeu → 409.
       responses:
         '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/InventoryItem'}}}}
         '422': {description: sortie > disponible (business_rule)}
@@ -292,26 +309,26 @@ paths:
   /backup/restore:
     post:
       tags: [backup]
-      summary: Restauration atomique (audité)
+      summary: Restauration atomique (audité) — livrée au Prompt 08
       requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
-      responses: {'200': {description: Rapport final, content: {application/json: {schema: {$ref: '#/components/schemas/BackupPreview'}}}}, '422': {description: backup invalide — rien écrit}}
+      responses: {'501': {description: not_implemented (phase 08)}}
   /sync/push:
     post:
       tags: [sync]
       summary: Pousser des opérations offline (idempotent)
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SyncPush'}}}}
-      responses: {'200': {description: Résultats par opération, content: {application/json: {schema: {$ref: '#/components/schemas/SyncPushResults'}}}}}
+      responses: {'501': {description: not_implemented (finalisée au Prompt 09)}}
   /sync/pull:
     get:
       tags: [sync]
       summary: Changements serveur incrémentaux
       parameters: [{name: sinceRevision, in: query, schema: {type: integer, format: int64}}, {name: limit, in: query, schema: {type: integer, default: 500, maximum: 2000}}]
-      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/SyncPull'}}}}}
+      responses: {'501': {description: not_implemented (finalisée au Prompt 09)}}
   /sync/status:
     get:
       tags: [sync]
       summary: État de synchronisation de l'appareil
-      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {lastAppliedAt: {type: string, format: date-time}, lastPushRevision: {type: integer}, cursor: {type: integer}}}}}}}
+      responses: {'501': {description: not_implemented (finalisée au Prompt 09)}}
 components:
   securitySchemes:
     sessionCookie: {type: apiKey, in: cookie, name: eclat_session}

@@ -48,12 +48,18 @@ func (r *AuthRepo) Get(ctx context.Context) (*service.Credential, error) {
 }
 
 func (r *AuthRepo) SetSecret(ctx context.Context, algo, passwordHash string, clearLegacy bool) error {
-	q := `UPDATE auth_credentials SET algo=$1, password_hash=$2, failed_attempts=0, locked_until=NULL, updated_at=now()`
+	clear := ""
 	if clearLegacy {
-		q += `, legacy_hash='', legacy_salt=''`
+		clear = `, legacy_hash='', legacy_salt=''`
 	}
-	q += ` WHERE id = 1`
-	_, err := r.pool.Exec(ctx, q, algo, passwordHash)
+	// UPSERT : setup doit fonctionner même sans ligne seedée (état vierge réel).
+	_, err := r.pool.Exec(ctx, `
+		INSERT INTO auth_credentials (id, algo, password_hash)
+		VALUES (1, $1, $2)
+		ON CONFLICT (id) DO UPDATE SET
+		  algo=EXCLUDED.algo, password_hash=EXCLUDED.password_hash,
+		  failed_attempts=0, locked_until=NULL`+clear+`, updated_at=now()`,
+		algo, passwordHash)
 	return err
 }
 

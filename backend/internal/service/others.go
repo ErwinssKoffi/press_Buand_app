@@ -41,12 +41,12 @@ func (s *SettingsService) Get(ctx context.Context) (*pressing.PressingSettings, 
 func (s *SettingsService) Update(ctx context.Context, next *pressing.PressingSettings) (*pressing.PressingSettings, error) {
 	normalizeSettings(next)
 	if next.ShopName == "" {
-		return nil, fmt.Errorf("shopName obligatoire")
+		return nil, fmt.Errorf("%w: shopName obligatoire", ErrValidation)
 	}
 	switch next.ActivityScope {
 	case pressing.ScopeBoth, pressing.ScopePressing, pressing.ScopeBlanchisserie:
 	default:
-		return nil, fmt.Errorf("activityScope invalide")
+		return nil, fmt.Errorf("%w: activityScope invalide", ErrValidation)
 	}
 	err := s.txm.WithTx(ctx, func(ctx context.Context, q dbtx.Querier) error {
 		if err := s.store.Update(ctx, q, next); err != nil {
@@ -142,15 +142,15 @@ func (s *CatalogService) List(ctx context.Context, activeOnly bool) ([]*pressing
 
 func (s *CatalogService) Save(ctx context.Context, item *pressing.CatalogItem) (*pressing.CatalogItem, error) {
 	if item.Name == "" || item.PriceFCFA < 0 {
-		return nil, fmt.Errorf("article invalide")
+		return nil, fmt.Errorf("%w: article invalide", ErrValidation)
 	}
 	switch item.Unit {
 	case "pièce", "kg", "paire":
 	default:
-		return nil, fmt.Errorf("unité invalide")
+		return nil, fmt.Errorf("%w: unité invalide", ErrValidation)
 	}
 	if !pressing.ValidServiceMode(string(item.DefaultMode)) {
-		return nil, fmt.Errorf("mode invalide")
+		return nil, fmt.Errorf("%w: mode invalide", ErrValidation)
 	}
 	if item.ID == "" {
 		item.ID = ids.NewUUID()
@@ -226,7 +226,7 @@ func (s *ClientService) Get(ctx context.Context, id string) (*pressing.Client, e
 
 func (s *ClientService) Save(ctx context.Context, c *pressing.Client) (*pressing.Client, error) {
 	if c.FullName == "" || c.Phone == "" {
-		return nil, fmt.Errorf("nom et téléphone obligatoires")
+		return nil, fmt.Errorf("%w: nom et téléphone obligatoires", ErrValidation)
 	}
 	if c.ID == "" {
 		c.ID = ids.NewUUID()
@@ -411,13 +411,13 @@ func (s *LogisticsService) List(ctx context.Context, status, typ, date string) (
 
 func (s *LogisticsService) Save(ctx context.Context, t *pressing.LogisticsTask) (*pressing.LogisticsTask, error) {
 	if !pressing.ValidLogisticsType(string(t.Type)) || t.ClientName == "" || t.ScheduledDate == "" {
-		return nil, fmt.Errorf("tâche invalide")
+		return nil, fmt.Errorf("%w: tâche invalide", ErrValidation)
 	}
 	if t.Status == "" {
 		t.Status = pressing.LogisticsPlanifie
 	}
 	if !pressing.ValidLogisticsStatus(string(t.Status)) {
-		return nil, fmt.Errorf("statut invalide")
+		return nil, fmt.Errorf("%w: statut invalide", ErrValidation)
 	}
 	err := s.txm.WithTx(ctx, func(ctx context.Context, q dbtx.Querier) error {
 		return s.store.Upsert(ctx, q, t)
@@ -431,7 +431,7 @@ func (s *LogisticsService) Save(ctx context.Context, t *pressing.LogisticsTask) 
 // SetStatus : livraison effectuée → commande livrée (même tx, corrige E2).
 func (s *LogisticsService) SetStatus(ctx context.Context, id string, status pressing.LogisticsStatus) (*pressing.LogisticsTask, error) {
 	if !pressing.ValidLogisticsStatus(string(status)) {
-		return nil, fmt.Errorf("statut invalide")
+		return nil, fmt.Errorf("%w: statut invalide", ErrValidation)
 	}
 	var task *pressing.LogisticsTask
 	err := s.txm.WithTx(ctx, func(ctx context.Context, q dbtx.Querier) error {
@@ -467,7 +467,7 @@ func (s *LogisticsService) Zones(ctx context.Context) ([]*pressing.DeliveryZone,
 
 func (s *LogisticsService) SaveZone(ctx context.Context, z *pressing.DeliveryZone) error {
 	if z.Commune == "" || z.FeeFCFA < 0 || z.PickupFeeFCFA < 0 {
-		return fmt.Errorf("zone invalide")
+		return fmt.Errorf("%w: zone invalide", ErrValidation)
 	}
 	if z.ID == "" {
 		z.ID = ids.NewUUID()
@@ -529,10 +529,10 @@ func (s *InventoryService) Movements(ctx context.Context, itemID string, limit i
 
 func (s *InventoryService) Save(ctx context.Context, i *pressing.InventoryItem) (*pressing.InventoryItem, error) {
 	if i.Name == "" || i.Unit == "" {
-		return nil, fmt.Errorf("article invalide")
+		return nil, fmt.Errorf("%w: article invalide", ErrValidation)
 	}
 	if i.Quantity < 0 || i.MinThreshold < 0 || i.UnitCostFCFA < 0 {
-		return nil, fmt.Errorf("valeurs négatives interdites")
+		return nil, fmt.Errorf("%w: valeurs négatives interdites", ErrValidation)
 	}
 	if i.ID == "" {
 		i.ID = ids.NewUUID()

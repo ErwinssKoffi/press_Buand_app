@@ -22,6 +22,8 @@ var (
 	ErrZoneMissing         = fmt.Errorf("zone de livraison introuvable ou inactive")
 	ErrInvalidAmount       = fmt.Errorf("montant invalide")
 	ErrInvalidQuantity     = fmt.Errorf("quantité invalide")
+	// ErrValidation : erreur de validation d'entrée (400 invalid_request).
+	ErrValidation = fmt.Errorf("validation")
 )
 
 // PricingInput : brouillon de dépôt envoyé par le terminal.
@@ -50,11 +52,11 @@ type PricingInput struct {
 
 // PricingResult : commande recalculée + décomposition des paiements.
 type PricingResult struct {
-	Order                 *pressing.Order
-	ActualPrepaidUsedFCFA int64
-	CashDueFCFA           int64
-	CashPaidFCFA          int64 // acompte réellement encaissé (≤ CashDue)
-	LoyaltyDiscountFCFA   int64
+	Order                 *pressing.Order `json:"order"`
+	ActualPrepaidUsedFCFA int64           `json:"actualPrepaidUsedFCFA"`
+	CashDueFCFA           int64           `json:"cashDueFCFA"`
+	CashPaidFCFA          int64           `json:"cashPaidFCFA"` // acompte réellement encaissé (≤ CashDue)
+	LoyaltyDiscountFCFA   int64           `json:"loyaltyDiscountFCFA"`
 }
 
 // recalcLineExpressFee portage exact de computeLineExpressFee (src/utils/formatters.ts).

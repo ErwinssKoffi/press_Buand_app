@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -15,7 +16,8 @@ import (
 	"github.com/erwinsskoffi/press_backend/internal/service"
 )
 
-// API : handlers REST métier /api/v1 (enveloppe standard, erreurs métier typées).
+// API : handlers REST métier /api/v1 (contrat docs/migration/02-api-contract.md).
+// Handlers fins : parsing/validation transport → services → réponse JSON.
 type API struct {
 	orders    *service.OrderService
 	settings  *service.SettingsService
@@ -34,94 +36,110 @@ func NewAPI(orders *service.OrderService, settings *service.SettingsService, cat
 	return &API{orders, settings, catalog, clients, logistics, inventory, cashbook, reports, expenses}
 }
 
+// Routes monte toutes les routes métier du contrat.
 func (a *API) Routes(r chi.Router) {
-	// Pressing
-	r.Get("/pressing/settings", a.getSettings)
-	r.Put("/pressing/settings", a.updateSettings)
-	r.Get("/pressing/catalog", a.listCatalog)
-	r.Post("/pressing/catalog", a.saveCatalog)
-	r.Delete("/pressing/catalog/{id}", a.deactivateCatalog)
+	r.Get("/bootstrap", a.bootstrap)
 
-	r.Get("/orders", a.listOrders)
-	r.Post("/orders", a.createOrder)
-	r.Post("/orders/mapping", a.mapping)
-	r.Route("/orders/{id}", func(r chi.Router) {
-		r.Get("/", a.getOrder)
-		r.Get("/payments", a.orderPayments)
-		r.Post("/payments", a.addPayment)
-		r.Patch("/status", a.advanceStatus)
-		r.Post("/void", a.voidOrder)
-		r.Get("/photos/{photoId}", a.claimPhoto)
-	})
+	// settings
+	r.Get("/settings", a.getSettings)
+	r.Put("/settings", a.updateSettings)
 
+	// catalog
+	r.Get("/catalog", a.listCatalog)
+	r.Post("/catalog", a.saveCatalog)
+	r.Put("/catalog/{id}", a.saveCatalogID)
+	r.Delete("/catalog/{id}", a.deactivateCatalog)
+
+	// clients + wallet
 	r.Get("/clients", a.listClients)
 	r.Post("/clients", a.saveClient)
-	r.Route("/clients/{id}", func(r chi.Router) {
-		r.Get("/", a.getClient)
-		r.Put("/", a.saveClientID)
-		r.Post("/wallet/topups", a.topup)
-		r.Post("/archive", a.archiveClient)
-	})
+	r.Get("/clients/{id}", a.getClient)
+	r.Put("/clients/{id}", a.saveClientID)
+	r.Delete("/clients/{id}", a.archiveClient)
+	r.Post("/clients/{id}/wallet/topups", a.topup)
 
-	r.Get("/zones", a.listZones)
-	r.Post("/zones", a.saveZone)
-	r.Delete("/zones/{id}", a.deleteZone)
+	// orders
+	r.Get("/orders", a.listOrders)
+	r.Post("/orders/mapping", a.mapping)
+	r.Post("/orders", a.createOrder)
+	r.Get("/orders/{id}", a.getOrder)
+	r.Get("/orders/{id}/payments", a.orderPayments)
+	r.Patch("/orders/{id}/status", a.advanceStatus)
+	r.Post("/orders/{id}/payments", a.addPayment)
+	r.Post("/orders/{id}/void", a.voidOrder)
+	r.Get("/orders/{id}/photos/{photoId}", a.claimPhoto)
 
-	r.Get("/logistics", a.listLogistics)
-	r.Post("/logistics", a.saveTask)
-	r.Post("/logistics/{id}/status", a.taskStatus)
-	r.Delete("/logistics/{id}", a.deleteTask)
-
-	r.Get("/inventory", a.listInventory)
-	r.Post("/inventory", a.saveItem)
-	r.Route("/inventory/{id}", func(r chi.Router) {
-		r.Post("/movements", a.movement)
-		r.Get("/movements", a.listMovements)
-		r.Post("/archive", a.archiveItem)
-	})
-
+	// expenses + reports
 	r.Get("/expenses", a.listExpenses)
 	r.Post("/expenses", a.createExpense)
 	r.Delete("/expenses/{id}", a.deleteExpense)
-
-	r.Get("/reports/z", a.dailyZ)
+	r.Get("/reports/daily-z", a.dailyZ)
 	r.Get("/reports/monthly", a.monthlyReport)
+
+	// delivery zones
+	r.Get("/delivery-zones", a.listZones)
+	r.Post("/delivery-zones", a.saveZone)
+	r.Put("/delivery-zones/{id}", a.saveZoneID)
+	r.Delete("/delivery-zones/{id}", a.deleteZone)
+
+	// logistics
+	r.Get("/logistics", a.listLogistics)
+	r.Post("/logistics", a.saveTask)
+	r.Patch("/logistics/{id}/status", a.taskStatus)
+	r.Delete("/logistics/{id}", a.deleteTask)
+
+	// inventory
+	r.Get("/inventory", a.listInventory)
+	r.Post("/inventory", a.saveItem)
+	r.Put("/inventory/{id}", a.saveItemID)
+	r.Delete("/inventory/{id}", a.archiveItem)
+	r.Get("/inventory/{id}/movements", a.listMovements)
+	r.Post("/inventory/{id}/movements", a.movement)
+
+	// backup (export/preview réels ; restore finalisé au Prompt 08)
+	r.Get("/backup/export", a.backupExport)
+	r.Post("/backup/preview", a.backupPreview)
+	r.Post("/backup/restore", a.notImplemented("backup.restore", "Prompt 08"))
+	// sync (préparée ici, finalisée au Prompt 09)
+	r.Post("/sync/push", a.notImplemented("sync.push", "Prompt 09"))
+	r.Get("/sync/pull", a.notImplemented("sync.pull", "Prompt 09"))
+	r.Get("/sync/status", a.notImplemented("sync.status", "Prompt 09"))
 }
 
 // --- helpers ---
 
-func respondJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func ok(w http.ResponseWriter, data any) {
-	respondJSON(w, http.StatusOK, Envelope{Success: true, Data: data})
-}
-
+// failDowngrade : classification uniforme des erreurs (contrat §1).
 func fail(w http.ResponseWriter, err error) {
 	switch {
+	case err == nil:
+		return
 	case errors.Is(err, service.ErrIdempotentReplay):
-		respondJSON(w, http.StatusConflict, Envelope{Success: false, Error: err.Error(), Code: "idempotent_replay"})
-		return
+		WriteError(w, http.StatusConflict, "conflict", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidAmount), errors.Is(err, service.ErrInvalidQuantity):
+		WriteError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
 	case service.IsBusinessError(err):
-		respondJSON(w, http.StatusBadRequest, Envelope{Success: false, Error: err.Error(), Code: "business_rule"})
-		return
+		// erreurs métier typées → 422 business_rule
+		WriteError(w, http.StatusUnprocessableEntity, "business_rule", err.Error(), nil)
+	case errors.Is(err, service.ErrValidation):
+		WriteError(w, http.StatusBadRequest, "invalid_request", err.Error(), nil)
 	case strings.Contains(err.Error(), "introuvable"):
-		respondJSON(w, http.StatusNotFound, Envelope{Success: false, Error: err.Error()})
+		WriteError(w, http.StatusNotFound, "not_found", err.Error(), nil)
+	case strings.Contains(err.Error(), "déjà appliquée"):
+		WriteError(w, http.StatusConflict, "conflict", err.Error(), nil)
 	default:
 		slog.Error("erreur interne non classée", "error", err)
-		respondJSON(w, http.StatusInternalServerError, Envelope{Success: false, Error: "erreur interne"})
+		WriteError(w, http.StatusInternalServerError, "internal", "Erreur interne.", nil)
 	}
 }
 
-func decodeBody(r *http.Request, dst any) error {
-	dec := json.NewDecoder(http.MaxBytesReader(w2(r), r.Body, 10<<20))
-	return dec.Decode(dst)
+func decodeBody(w http.ResponseWriter, r *http.Request, dst any) error {
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 10<<20))
+	if err := dec.Decode(dst); err != nil {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "Corps JSON invalide.", nil)
+		return err
+	}
+	return nil
 }
-
-func w2(r *http.Request) http.ResponseWriter { return nil }
 
 func idemKey(r *http.Request) string {
 	return r.Header.Get("Idempotency-Key")
@@ -143,7 +161,96 @@ func queryPage(r *http.Request) (page, pageSize int) {
 	return
 }
 
-// --- pressing settings ---
+// requireIdemKey : Idempotency-Key obligatoire (contrat §1) — en-tête
+// prioritaire, sinon champ `idempotencyKey` du corps si l'implémentation
+// l'a stocké via setIdemBody.
+func requireIdemKey(w http.ResponseWriter, r *http.Request) (string, bool) {
+	k := idemKey(r)
+	if k == "" {
+		k = r.Header.Get("X-Idempotency-Body")
+	}
+	if k == "" {
+		WriteError(w, http.StatusBadRequest, "invalid_request",
+			"Idempotency-Key requis (en-tête ou champ idempotencyKey).", nil)
+		return "", false
+	}
+	if len(k) > 200 {
+		WriteError(w, http.StatusBadRequest, "invalid_request", "Idempotency-Key trop longue.", nil)
+		return "", false
+	}
+	return k, true
+}
+
+// --- bootstrap ---
+
+func (a *API) bootstrap(w http.ResponseWriter, r *http.Request) {
+	windowDays, _ := strconv.Atoi(r.URL.Query().Get("windowDays"))
+	if windowDays < 1 || windowDays > 365 {
+		windowDays = 90
+	}
+	from := time.Now().AddDate(0, 0, -windowDays).Format("2006-01-02")
+	to := time.Now().Format("2006-01-02")
+
+	settings, err := a.settings.Get(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	catalog, err := a.catalog.List(r.Context(), false)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	zones, err := a.logistics.Zones(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	clients, _, err := a.clients.List(r.Context(), "", 1, 200)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	orders, _, err := a.orders.List(r.Context(), pressing.OrderFilter{From: from, To: to, Page: 1, PageSize: 200})
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	payments, err := a.reports.PaymentsWindow(r.Context(), from, to, 500)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	expenses, _, err := a.cashbook.Expenses(r.Context(), from, to, 1, 200)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	logistics, err := a.logistics.List(r.Context(), "", "", "")
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	inventory, err := a.inventory.List(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	movements, err := a.inventory.Movements(r.Context(), "", 500)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"settings": settings, "catalog": catalog, "clients": clients,
+		"orders": orders, "payments": payments, "expenses": expenses,
+		"zones": zones, "logistics": logistics,
+		"inventory": inventory, "inventoryMovements": movements,
+		"sync": map[string]any{"cursor": 0, "serverTime": time.Now().UTC().Format(time.RFC3339)},
+	})
+}
+
+// --- settings ---
 
 func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 	s, err := a.settings.Get(r.Context())
@@ -151,13 +258,12 @@ func (a *API) getSettings(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, s)
+	writeJSON(w, http.StatusOK, s)
 }
 
 func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var s pressing.PressingSettings
-	if err := decodeBody(r, &s); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &s); err != nil {
 		return
 	}
 	updated, err := a.settings.Update(r.Context(), &s)
@@ -165,24 +271,23 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, updated)
+	writeJSON(w, http.StatusOK, updated)
 }
 
 // --- catalog ---
 
 func (a *API) listCatalog(w http.ResponseWriter, r *http.Request) {
-	items, err := a.catalog.List(r.Context(), r.URL.Query().Get("includeInactive") != "1")
+	items, err := a.catalog.List(r.Context(), r.URL.Query().Get("includeInactive") == "1")
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	ok(w, items)
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (a *API) saveCatalog(w http.ResponseWriter, r *http.Request) {
 	var item pressing.CatalogItem
-	if err := decodeBody(r, &item); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &item); err != nil {
 		return
 	}
 	saved, err := a.catalog.Save(r.Context(), &item)
@@ -190,7 +295,21 @@ func (a *API) saveCatalog(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, saved)
+	writeJSON(w, http.StatusCreated, saved)
+}
+
+func (a *API) saveCatalogID(w http.ResponseWriter, r *http.Request) {
+	var item pressing.CatalogItem
+	if err := decodeBody(w, r, &item); err != nil {
+		return
+	}
+	item.ID = pathID(r, "id")
+	saved, err := a.catalog.Save(r.Context(), &item)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
 }
 
 func (a *API) deactivateCatalog(w http.ResponseWriter, r *http.Request) {
@@ -198,15 +317,15 @@ func (a *API) deactivateCatalog(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, map[string]bool{"deactivated": true})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- orders ---
 
+// mapping : aperçu tarifaire (aucune écriture).
 func (a *API) mapping(w http.ResponseWriter, r *http.Request) {
 	var req MappingRequest
-	if err := decodeBody(r, &req); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &req); err != nil {
 		return
 	}
 	settings, err := a.settings.Get(r.Context())
@@ -218,10 +337,9 @@ func (a *API) mapping(w http.ResponseWriter, r *http.Request) {
 	if req.NewClient != nil {
 		client = req.NewClient
 	} else if req.ClientID != nil && *req.ClientID != "" {
-		// aperçu fidèle : solde prépayé et points réels du client
 		c, err := a.clients.Get(r.Context(), *req.ClientID)
 		if err == nil && c != nil && !c.Archived {
-			client = c
+			client = c // aperçu fidèle : solde/points réels
 		}
 	}
 	var zone *pressing.DeliveryZone
@@ -246,7 +364,7 @@ func (a *API) mapping(w http.ResponseWriter, r *http.Request) {
 	if client != nil {
 		in.ClientID = &client.ID
 	}
-	res, perr := service.RecalculateOrder(in, settings, client, zone, func(id string) *pressing.CatalogItem {
+	res, err := service.RecalculateOrder(in, settings, client, zone, func(id string) *pressing.CatalogItem {
 		for _, c := range catalog {
 			if c.ID == id {
 				return c
@@ -254,30 +372,33 @@ func (a *API) mapping(w http.ResponseWriter, r *http.Request) {
 		}
 		return nil
 	})
-	if perr != nil {
-		fail(w, perr)
-		return
-	}
-	ok(w, map[string]any{
-		"order":             res.Order,
-		"actualPrepaidUsed": res.ActualPrepaidUsedFCFA,
-		"cashDue":           res.CashDueFCFA,
-		"loyaltyDiscount":   res.LoyaltyDiscountFCFA,
-	})
-}
-
-func (a *API) createOrder(w http.ResponseWriter, r *http.Request) {
-	var req MappingRequest
-	if err := decodeBody(r, &req); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
-		return
-	}
-	o, err := a.orders.Create(r.Context(), req.toPricingInput(), req.ClaimPhotos, idemKey(r))
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	respondJSON(w, http.StatusCreated, Envelope{Success: true, Data: o})
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (a *API) createOrder(w http.ResponseWriter, r *http.Request) {
+	var req MappingRequest
+	if err := decodeBody(w, r, &req); err != nil {
+		return
+	}
+	key := idemKey(r)
+	if key == "" && req.IdempotencyKey != "" {
+		key = req.IdempotencyKey
+	}
+	if key == "" {
+		WriteError(w, http.StatusBadRequest, "invalid_request",
+			"Idempotency-Key requis (en-tête ou champ idempotencyKey).", nil)
+		return
+	}
+	o, err := a.orders.Create(r.Context(), req.toPricingInput(), req.ClaimPhotos, key)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, o)
 }
 
 func (a *API) listOrders(w http.ResponseWriter, r *http.Request) {
@@ -285,14 +406,14 @@ func (a *API) listOrders(w http.ResponseWriter, r *http.Request) {
 	f := pressing.OrderFilter{
 		Status:   r.URL.Query().Get("status"),
 		ClientID: r.URL.Query().Get("clientId"),
-		Search:   r.URL.Query().Get("search"),
+		Search:   r.URL.Query().Get("q"),
 		From:     r.URL.Query().Get("from"),
 		To:       r.URL.Query().Get("to"),
 		Page:     page,
 		PageSize: pageSize,
 	}
 	if f.From != "" && len(f.From) != 10 || f.To != "" && len(f.To) != 10 {
-		fail(w, fmt.Errorf("dates invalides (YYYY-MM-DD)"))
+		WriteError(w, http.StatusBadRequest, "invalid_request", "Dates invalides (YYYY-MM-DD).", nil)
 		return
 	}
 	orders, total, err := a.orders.List(r.Context(), f)
@@ -300,7 +421,7 @@ func (a *API) listOrders(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, map[string]any{"items": orders, "total": total, "page": page, "pageSize": pageSize})
+	writeJSON(w, http.StatusOK, map[string]any{"items": orders, "total": total, "page": page, "pageSize": pageSize})
 }
 
 func (a *API) getOrder(w http.ResponseWriter, r *http.Request) {
@@ -310,10 +431,10 @@ func (a *API) getOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if o == nil {
-		respondJSON(w, http.StatusNotFound, Envelope{Success: false, Error: "commande introuvable"})
+		WriteError(w, http.StatusNotFound, "not_found", "Commande introuvable.", nil)
 		return
 	}
-	ok(w, o)
+	writeJSON(w, http.StatusOK, o)
 }
 
 func (a *API) orderPayments(w http.ResponseWriter, r *http.Request) {
@@ -322,85 +443,76 @@ func (a *API) orderPayments(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, list)
+	writeJSON(w, http.StatusOK, list)
 }
 
 func (a *API) addPayment(w http.ResponseWriter, r *http.Request) {
 	var req PaymentRequest
-	if err := decodeBody(r, &req); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &req); err != nil {
 		return
 	}
-	o, err := a.orders.AddPayment(r.Context(), pathID(r, "id"), req.AmountFCFA, req.Method, idemKey(r))
+	if idemKey(r) == "" && req.IdempotencyKey != "" {
+		r.Header.Set("X-Idempotency-Body", req.IdempotencyKey)
+	}
+	key, okk := requireIdemKey(w, r)
+	if !okk {
+		return
+	}
+	o, err := a.orders.AddPayment(r.Context(), pathID(r, "id"), req.AmountFCFA, req.Method, key)
 	if err != nil {
-		if strings.Contains(err.Error(), "introuvable") {
-			respondJSON(w, http.StatusNotFound, Envelope{Success: false, Error: "commande introuvable"})
-			return
-		}
 		fail(w, err)
 		return
 	}
-	ok(w, o)
+	writeJSON(w, http.StatusOK, o)
 }
 
 func (a *API) advanceStatus(w http.ResponseWriter, r *http.Request) {
 	var req StatusRequest
-	_ = decodeBody(r, &req)
+	_ = decodeBody(w, r, &req) // corps optionnel ({}) : transition implicite acceptée
 	o, err := a.orders.AdvanceStatus(r.Context(), pathID(r, "id"), req.Status)
 	if err != nil {
-		if strings.Contains(err.Error(), "introuvable") {
-			respondJSON(w, http.StatusNotFound, Envelope{Success: false, Error: "commande introuvable"})
-			return
-		}
 		fail(w, err)
 		return
 	}
-	ok(w, o)
+	writeJSON(w, http.StatusOK, o)
 }
 
 func (a *API) voidOrder(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Reason string `json:"reason"`
 	}
-	if err := decodeBody(r, &req); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &req); err != nil {
 		return
 	}
 	o, err := a.orders.Void(r.Context(), pathID(r, "id"), req.Reason)
 	if err != nil {
-		if strings.Contains(err.Error(), "introuvable") {
-			respondJSON(w, http.StatusNotFound, Envelope{Success: false, Error: "commande introuvable"})
-			return
-		}
 		fail(w, err)
 		return
 	}
-	ok(w, o)
+	writeJSON(w, http.StatusOK, o)
 }
 
 func (a *API) claimPhoto(w http.ResponseWriter, r *http.Request) {
-	orderID := pathID(r, "id")
-	photoID := pathID(r, "photoId")
-	photos, err := a.orders.PhotoBytes(r.Context(), orderID, photoID)
+	data, err := a.orders.PhotoBytes(r.Context(), pathID(r, "id"), pathID(r, "photoId"))
 	if err != nil {
 		fail(w, err)
 		return
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(photos)
+	_, _ = w.Write(data)
 }
 
 // --- clients ---
 
 func (a *API) listClients(w http.ResponseWriter, r *http.Request) {
 	page, pageSize := queryPage(r)
-	list, total, err := a.clients.List(r.Context(), r.URL.Query().Get("search"), page, pageSize)
+	list, total, err := a.clients.List(r.Context(), r.URL.Query().Get("q"), page, pageSize)
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	ok(w, map[string]any{"items": list, "total": total, "page": page, "pageSize": pageSize})
+	writeJSON(w, http.StatusOK, map[string]any{"items": list, "total": total, "page": page, "pageSize": pageSize})
 }
 
 func (a *API) getClient(w http.ResponseWriter, r *http.Request) {
@@ -410,16 +522,15 @@ func (a *API) getClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if c == nil {
-		respondJSON(w, http.StatusNotFound, Envelope{Success: false, Error: "client introuvable"})
+		WriteError(w, http.StatusNotFound, "not_found", "Client introuvable.", nil)
 		return
 	}
-	ok(w, c)
+	writeJSON(w, http.StatusOK, c)
 }
 
 func (a *API) saveClient(w http.ResponseWriter, r *http.Request) {
 	var c pressing.Client
-	if err := decodeBody(r, &c); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &c); err != nil {
 		return
 	}
 	saved, err := a.clients.Save(r.Context(), &c)
@@ -427,13 +538,12 @@ func (a *API) saveClient(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	respondJSON(w, http.StatusCreated, Envelope{Success: true, Data: saved})
+	writeJSON(w, http.StatusCreated, saved)
 }
 
 func (a *API) saveClientID(w http.ResponseWriter, r *http.Request) {
 	var c pressing.Client
-	if err := decodeBody(r, &c); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &c); err != nil {
 		return
 	}
 	c.ID = pathID(r, "id")
@@ -442,14 +552,17 @@ func (a *API) saveClientID(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, saved)
+	writeJSON(w, http.StatusOK, saved)
 }
 
 func (a *API) topup(w http.ResponseWriter, r *http.Request) {
 	var req TopupRequest
-	if err := decodeBody(r, &req); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &req); err != nil {
 		return
+	}
+	key := idemKey(r)
+	if key == "" && req.IdempotencyKey != "" {
+		key = req.IdempotencyKey
 	}
 	in := service.TopupIn{
 		AmountFCFA:            req.AmountFCFA,
@@ -458,18 +571,14 @@ func (a *API) topup(w http.ResponseWriter, r *http.Request) {
 		SubscriptionLabel:     req.SubscriptionLabel,
 		SubscriptionExpiresAt: req.SubscriptionExpiresAt,
 		Note:                  req.Note,
-		IdempotencyKey:        idemKey(r),
+		IdempotencyKey:        key,
 	}
 	c, err := a.clients.Topup(r.Context(), pathID(r, "id"), in)
 	if err != nil {
-		if strings.Contains(err.Error(), "introuvable") {
-			respondJSON(w, http.StatusNotFound, Envelope{Success: false, Error: "client introuvable"})
-			return
-		}
 		fail(w, err)
 		return
 	}
-	ok(w, c)
+	writeJSON(w, http.StatusOK, c)
 }
 
 func (a *API) archiveClient(w http.ResponseWriter, r *http.Request) {
@@ -477,7 +586,7 @@ func (a *API) archiveClient(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, map[string]bool{"archived": true})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- zones & logistics ---
@@ -488,20 +597,32 @@ func (a *API) listZones(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, zones)
+	writeJSON(w, http.StatusOK, zones)
 }
 
 func (a *API) saveZone(w http.ResponseWriter, r *http.Request) {
 	var z pressing.DeliveryZone
-	if err := decodeBody(r, &z); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &z); err != nil {
 		return
 	}
 	if err := a.logistics.SaveZone(r.Context(), &z); err != nil {
 		fail(w, err)
 		return
 	}
-	ok(w, z)
+	writeJSON(w, http.StatusCreated, z)
+}
+
+func (a *API) saveZoneID(w http.ResponseWriter, r *http.Request) {
+	var z pressing.DeliveryZone
+	if err := decodeBody(w, r, &z); err != nil {
+		return
+	}
+	z.ID = pathID(r, "id")
+	if err := a.logistics.SaveZone(r.Context(), &z); err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, z)
 }
 
 func (a *API) deleteZone(w http.ResponseWriter, r *http.Request) {
@@ -509,7 +630,7 @@ func (a *API) deleteZone(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, map[string]bool{"deleted": true})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) listLogistics(w http.ResponseWriter, r *http.Request) {
@@ -519,13 +640,12 @@ func (a *API) listLogistics(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, tasks)
+	writeJSON(w, http.StatusOK, tasks)
 }
 
 func (a *API) saveTask(w http.ResponseWriter, r *http.Request) {
 	var t pressing.LogisticsTask
-	if err := decodeBody(r, &t); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &t); err != nil {
 		return
 	}
 	saved, err := a.logistics.Save(r.Context(), &t)
@@ -533,27 +653,22 @@ func (a *API) saveTask(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, saved)
+	writeJSON(w, http.StatusCreated, saved)
 }
 
 func (a *API) taskStatus(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Status string `json:"status"`
 	}
-	if err := decodeBody(r, &req); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &req); err != nil {
 		return
 	}
 	t, err := a.logistics.SetStatus(r.Context(), pathID(r, "id"), pressing.LogisticsStatus(req.Status))
 	if err != nil {
-		if strings.Contains(err.Error(), "introuvable") {
-			respondJSON(w, http.StatusNotFound, Envelope{Success: false, Error: "tâche introuvable"})
-			return
-		}
 		fail(w, err)
 		return
 	}
-	ok(w, t)
+	writeJSON(w, http.StatusOK, t)
 }
 
 func (a *API) deleteTask(w http.ResponseWriter, r *http.Request) {
@@ -561,7 +676,7 @@ func (a *API) deleteTask(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, map[string]bool{"deleted": true})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- inventory ---
@@ -572,13 +687,12 @@ func (a *API) listInventory(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, items)
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (a *API) saveItem(w http.ResponseWriter, r *http.Request) {
 	var i pressing.InventoryItem
-	if err := decodeBody(r, &i); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &i); err != nil {
 		return
 	}
 	saved, err := a.inventory.Save(r.Context(), &i)
@@ -586,14 +700,31 @@ func (a *API) saveItem(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, saved)
+	writeJSON(w, http.StatusCreated, saved)
+}
+
+func (a *API) saveItemID(w http.ResponseWriter, r *http.Request) {
+	var i pressing.InventoryItem
+	if err := decodeBody(w, r, &i); err != nil {
+		return
+	}
+	i.ID = pathID(r, "id")
+	saved, err := a.inventory.Save(r.Context(), &i)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
 }
 
 func (a *API) movement(w http.ResponseWriter, r *http.Request) {
 	var req MovementRequest
-	if err := decodeBody(r, &req); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &req); err != nil {
 		return
+	}
+	key := idemKey(r)
+	if key == "" && req.IdempotencyKey != "" {
+		key = req.IdempotencyKey
 	}
 	in := service.MovementIn{
 		Type:           req.Type,
@@ -602,18 +733,14 @@ func (a *API) movement(w http.ResponseWriter, r *http.Request) {
 		Reason:         req.Reason,
 		RecordExpense:  req.RecordExpense,
 		PaymentMethod:  req.PaymentMethod,
-		IdempotencyKey: idemKey(r),
+		IdempotencyKey: key,
 	}
 	item, err := a.inventory.Movement(r.Context(), pathID(r, "id"), in, a.expenses)
 	if err != nil {
-		if strings.Contains(err.Error(), "introuvable") {
-			respondJSON(w, http.StatusNotFound, Envelope{Success: false, Error: "article introuvable"})
-			return
-		}
 		fail(w, err)
 		return
 	}
-	ok(w, item)
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (a *API) listMovements(w http.ResponseWriter, r *http.Request) {
@@ -623,7 +750,7 @@ func (a *API) listMovements(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, moves)
+	writeJSON(w, http.StatusOK, moves)
 }
 
 func (a *API) archiveItem(w http.ResponseWriter, r *http.Request) {
@@ -631,7 +758,7 @@ func (a *API) archiveItem(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, map[string]bool{"archived": true})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- cashbook ---
@@ -644,13 +771,12 @@ func (a *API) listExpenses(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, map[string]any{"items": list, "total": total, "page": page, "pageSize": pageSize})
+	writeJSON(w, http.StatusOK, map[string]any{"items": list, "total": total, "page": page, "pageSize": pageSize})
 }
 
 func (a *API) createExpense(w http.ResponseWriter, r *http.Request) {
 	var e pressing.ExpenseRecord
-	if err := decodeBody(r, &e); err != nil {
-		fail(w, fmt.Errorf("corps JSON invalide"))
+	if err := decodeBody(w, r, &e); err != nil {
 		return
 	}
 	saved, err := a.cashbook.CreateExpense(r.Context(), &e)
@@ -658,7 +784,7 @@ func (a *API) createExpense(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	respondJSON(w, http.StatusCreated, Envelope{Success: true, Data: saved})
+	writeJSON(w, http.StatusCreated, saved)
 }
 
 func (a *API) deleteExpense(w http.ResponseWriter, r *http.Request) {
@@ -666,7 +792,7 @@ func (a *API) deleteExpense(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, map[string]bool{"deleted": true})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // --- reports ---
@@ -677,7 +803,7 @@ func (a *API) dailyZ(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, z)
+	writeJSON(w, http.StatusOK, z)
 }
 
 func (a *API) monthlyReport(w http.ResponseWriter, r *http.Request) {
@@ -686,5 +812,96 @@ func (a *API) monthlyReport(w http.ResponseWriter, r *http.Request) {
 		fail(w, err)
 		return
 	}
-	ok(w, m)
+	writeJSON(w, http.StatusOK, m)
+}
+
+// --- backup (export/preview réels ; restore = Prompt 08) ---
+
+func (a *API) backupExport(w http.ResponseWriter, r *http.Request) {
+	settings, err := a.settings.Get(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	catalog, err := a.catalog.List(r.Context(), false)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	zones, err := a.logistics.Zones(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	clients, _, err := a.clients.List(r.Context(), "", 1, 200)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	orders, _, err := a.orders.List(r.Context(), pressing.OrderFilter{Page: 1, PageSize: 200})
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	inventory, err := a.inventory.List(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	movements, err := a.inventory.Movements(r.Context(), "", 500)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	expenses, _, err := a.cashbook.Expenses(r.Context(), "", "", 1, 200)
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"schemaVersion":      3,
+		"exportedAt":         time.Now().UTC().Format(time.RFC3339),
+		"settings":           settings,
+		"catalog":            catalog,
+		"clients":            clients,
+		"orders":             orders,
+		"expenses":           expenses,
+		"zones":              zones,
+		"inventory":          inventory,
+		"inventoryMovements": movements,
+	})
+}
+
+func (a *API) backupPreview(w http.ResponseWriter, r *http.Request) {
+	var payload map[string]any
+	if err := decodeBody(w, r, &payload); err != nil {
+		return
+	}
+	report := map[string]any{}
+	v, ok := payload["schemaVersion"].(float64)
+	if !ok || int(v) != 3 {
+		WriteError(w, http.StatusUnprocessableEntity, "business_rule",
+			"schemaVersion v3 attendu.", map[string]any{"received": payload["schemaVersion"]})
+		return
+	}
+	for _, k := range []string{"settings", "catalog", "clients", "orders", "expenses", "zones", "inventory"} {
+		switch arr := payload[k].(type) {
+		case []any:
+			report[k] = len(arr)
+		case map[string]any:
+			report[k] = 1
+		default:
+			report[k] = 0
+		}
+	}
+	report["anomalies"] = []string{}
+	report["status"] = "valide"
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (a *API) notImplemented(feature, phase string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		WriteError(w, http.StatusNotImplemented, "not_implemented",
+			fmt.Sprintf("%s sera disponible à la phase %s.", feature, phase), nil)
+	}
 }

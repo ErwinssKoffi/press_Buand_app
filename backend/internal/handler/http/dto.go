@@ -5,28 +5,58 @@ import (
 	"github.com/erwinsskoffi/press_backend/internal/service"
 )
 
-// Envelope : format standard des réponses /api/v1.
-type Envelope struct {
-	Success bool   `json:"success"`
-	Data    any    `json:"data"`
-	Error   string `json:"error,omitempty"`
-	Code    string `json:"code,omitempty"`
-}
-
+// MappingRequest : brouillon de dépôt (contrat §4) — aperçu /orders/mapping
+// et création POST /orders. Les montants restent indicatifs : le serveur
+// recalcule tout.
 type MappingRequest struct {
+	IdempotencyKey string                   `json:"idempotencyKey,omitempty"`
 	ClientID       *string                  `json:"clientId"`
+	NewClient      *pressing.Client         `json:"newClient"`
+	ClientName     string                   `json:"clientName"`
+	ClientPhone    string                   `json:"clientPhone"`
+	Commune        string                   `json:"commune"`
+	RackSlot       string                   `json:"rackSlot"`
 	Items          []pressing.OrderLineItem `json:"items"`
-	Notes          string                   `json:"notes"`
 	IsExpress      bool                     `json:"isExpress"`
 	DeliveryZoneID *string                  `json:"deliveryZoneId"`
-	DiscountFCFA   int64                    `json:"discountFCFA"`
-	UsePrepaid     bool                     `json:"usePrepaid"`
-	// InitialCashPaidFCFA : acompte espèces/mobile payé au dépôt (nil = solde complet).
-	InitialCashPaidFCFA *int64                     `json:"initialCashPaidFCFA"`
-	RedeemLoyalty       bool                       `json:"redeemLoyalty"`
-	InitialPayment      pressing.PaymentMethod     `json:"initialPaymentMethod"`
-	NewClient           *pressing.Client           `json:"newClient"`
-	ClaimPhotos         []pressing.OrderClaimPhoto `json:"claimPhotos"`
+	// DeliveryFeeFCFA ignoré : recalculé depuis la zone validée (ADR A13).
+	DeliveryFeeFCFA       int64                      `json:"deliveryFeeFCFA"`
+	DiscountFCFA          int64                      `json:"discountFCFA"`
+	UsePrepaid            bool                       `json:"usePrepaid"`
+	PrepaidAmountFCFA     int64                      `json:"prepaidAmountFCFA"`
+	LoyaltyPointsRedeemed int64                      `json:"loyaltyPointsRedeemed"`
+	InitialPaymentMethod  pressing.PaymentMethod     `json:"initialPaymentMethod"`
+	InitialCashPaidFCFA   *int64                     `json:"initialCashPaidFCFA"`
+	DropOffDate           string                     `json:"dropOffDate"`
+	DueDate               *string                    `json:"dueDate"`
+	Notes                 string                     `json:"notes"`
+	ClaimPhotos           []pressing.OrderClaimPhoto `json:"claimPhotos"`
+}
+
+func (r MappingRequest) toPricingInput() service.PricingInput {
+	var notes *string
+	if r.Notes != "" {
+		notes = &r.Notes
+	}
+	return service.PricingInput{
+		ClientID:              r.ClientID,
+		NewClient:             r.NewClient,
+		ClientName:            r.ClientName,
+		ClientPhone:           r.ClientPhone,
+		Commune:               r.Commune,
+		RackSlot:              r.RackSlot,
+		Items:                 r.Items,
+		DeliveryZoneID:        r.DeliveryZoneID,
+		DiscountFCFA:          r.DiscountFCFA,
+		UsePrepaid:            r.UsePrepaid,
+		PrepaidAmountFCFA:     r.PrepaidAmountFCFA,
+		LoyaltyPointsRedeemed: r.LoyaltyPointsRedeemed,
+		InitialPaymentMethod:  r.InitialPaymentMethod,
+		InitialCashPaidFCFA:   r.InitialCashPaidFCFA,
+		DropOffDate:           r.DropOffDate,
+		DueDate:               r.DueDate,
+		Notes:                 notes,
+	}
 }
 
 type StatusRequest struct {
@@ -34,8 +64,9 @@ type StatusRequest struct {
 }
 
 type PaymentRequest struct {
-	AmountFCFA int64                  `json:"amountFCFA"`
-	Method     pressing.PaymentMethod `json:"method"`
+	AmountFCFA     int64                  `json:"amountFCFA"`
+	Method         pressing.PaymentMethod `json:"method"`
+	IdempotencyKey string                 `json:"idempotencyKey,omitempty"`
 }
 
 type TopupRequest struct {
@@ -45,31 +76,15 @@ type TopupRequest struct {
 	SubscriptionLabel     string                 `json:"subscriptionLabel"`
 	SubscriptionExpiresAt string                 `json:"subscriptionExpiresAt"`
 	Note                  string                 `json:"note"`
+	IdempotencyKey        string                 `json:"idempotencyKey,omitempty"`
 }
 
 type MovementRequest struct {
-	Type          pressing.InventoryMovementType `json:"type"`
-	Quantity      float64                        `json:"quantity"`
-	UnitCostFCFA  *int64                         `json:"unitCostFCFA"`
-	Reason        string                         `json:"reason"`
-	RecordExpense bool                           `json:"recordExpense"`
-	PaymentMethod pressing.PaymentMethod         `json:"paymentMethod"`
-}
-
-func (r MappingRequest) toPricingInput() service.PricingInput {
-	var notes *string
-	if r.Notes != "" {
-		notes = &r.Notes
-	}
-	return service.PricingInput{
-		ClientID:             r.ClientID,
-		Items:                r.Items,
-		Notes:                notes,
-		DeliveryZoneID:       r.DeliveryZoneID,
-		DiscountFCFA:         r.DiscountFCFA,
-		UsePrepaid:           r.UsePrepaid,
-		InitialCashPaidFCFA:  r.InitialCashPaidFCFA,
-		InitialPaymentMethod: r.InitialPayment,
-		NewClient:            r.NewClient,
-	}
+	Type           pressing.InventoryMovementType `json:"type"`
+	Quantity       float64                        `json:"quantity"`
+	UnitCostFCFA   *int64                         `json:"unitCostFCFA"`
+	Reason         string                         `json:"reason"`
+	RecordExpense  bool                           `json:"recordExpense"`
+	PaymentMethod  pressing.PaymentMethod         `json:"paymentMethod"`
+	IdempotencyKey string                         `json:"idempotencyKey,omitempty"`
 }

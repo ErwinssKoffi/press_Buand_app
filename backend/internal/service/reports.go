@@ -13,6 +13,7 @@ import (
 type ZStore interface {
 	DailyZ(ctx context.Context, q dbtx.Querier, date string) (*pressing.DailyZ, error)
 	Monthly(ctx context.Context, q dbtx.Querier, month string) (*pressing.MonthlyReport, error)
+	ListPayments(ctx context.Context, q dbtx.Querier, from, to string, limit int) ([]*pressing.PaymentRecord, error)
 }
 
 type ReportsService struct {
@@ -54,4 +55,18 @@ func (s *ReportsService) Monthly(ctx context.Context, month string) (*pressing.M
 		return err
 	})
 	return m, err
+}
+
+// PaymentsWindow : paiements sur une fenêtre (bootstrap).
+func (s *ReportsService) PaymentsWindow(ctx context.Context, from, to string, limit int) ([]*pressing.PaymentRecord, error) {
+	if limit <= 0 || limit > 2000 {
+		limit = 500
+	}
+	var out []*pressing.PaymentRecord
+	err := s.txm.WithTx(ctx, func(ctx context.Context, q dbtx.Querier) error {
+		var err error
+		out, err = s.store.ListPayments(ctx, q, from, to, limit)
+		return err
+	})
+	return out, err
 }
