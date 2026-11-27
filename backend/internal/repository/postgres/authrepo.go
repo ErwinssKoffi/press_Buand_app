@@ -38,6 +38,10 @@ func (r *AuthRepo) Get(ctx context.Context) (*service.Credential, error) {
 	c := &service.Credential{}
 	if err := row.Scan(&c.Algo, &c.PasswordHash, &c.LegacyHash, &c.LegacySalt,
 		&c.FailedAttempts, &c.LockedUntil); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// ligne absente (seed supprimé) : état vierge, setup possible
+			return &service.Credential{Algo: "none"}, nil
+		}
 		return nil, err
 	}
 	return c, nil

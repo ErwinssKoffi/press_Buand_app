@@ -142,7 +142,7 @@ func testServer(t *testing.T, weak bool) *httptest.Server {
 	srv := server.New(server.Deps{
 		AuthSvc:      svc,
 		AuthHandlers: h,
-		API:          api,
+		APIRouter:    api,
 	})
 	ts := httptest.NewServer(srv.Handler)
 	t.Cleanup(ts.Close)

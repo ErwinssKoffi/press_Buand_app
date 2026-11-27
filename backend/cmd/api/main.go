@@ -13,10 +13,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/erwinsskoffi/press_backend/internal/config"
 	"github.com/erwinsskoffi/press_backend/internal/domain/auth"
 	httph "github.com/erwinsskoffi/press_backend/internal/handler/http"
 	"github.com/erwinsskoffi/press_backend/internal/platform/database"
+	"github.com/erwinsskoffi/press_backend/internal/platform/dbtx"
 	"github.com/erwinsskoffi/press_backend/internal/platform/migrate"
 	"github.com/erwinsskoffi/press_backend/internal/repository/postgres"
 	"github.com/erwinsskoffi/press_backend/internal/server"
@@ -65,6 +68,7 @@ func run(log *slog.Logger) error {
 	}
 
 	repo := postgres.New(pool)
+	txm := dbtx.NewTxManager(pool)
 
 	if err := os.MkdirAll(cfg.StorageDir, 0o750); err != nil {
 		return err
@@ -72,6 +76,30 @@ func run(log *slog.Logger) error {
 
 	// Auth : credentials + sessions + audit
 	auditRepo := postgres.NewAuditRepo(pool)
+
+	// Repos métier (phase 05/06)
+	settingsRepo := &postgres.SettingsRepo{}
+	catalogRepo := &postgres.CatalogRepo{}
+	clientRepo := &postgres.ClientRepo{}
+	ticketRepo := &postgres.TicketRepo{}
+	orderRepo := &postgres.OrderRepo{}
+	paymentRepo := &postgres.PaymentRepo{}
+	expenseRepo := &postgres.ExpenseRepo{}
+	zoneRepo := &postgres.ZoneRepo{}
+	logisticsRepo := &postgres.LogisticsRepo{}
+	inventoryRepo := &postgres.InventoryRepo{}
+	reportRepo := &postgres.ReportRepo{}
+
+	// Services métier
+	orderSvc := service.NewOrderService(orderRepo, catalogRepo, paymentRepo, settingsRepo,
+		clientRepo, ticketRepo, zoneRepo, txm, auditRepo)
+	settingsSvc := service.NewSettingsService(settingsRepo, txm, auditRepo)
+	catalogSvc := service.NewCatalogService(catalogRepo, txm, auditRepo)
+	clientSvc := service.NewClientService(clientRepo, paymentRepo, txm, auditRepo)
+	logisticsSvc := service.NewLogisticsService(logisticsRepo, zoneRepo, txm, auditRepo)
+	inventorySvc := service.NewInventoryService(inventoryRepo, txm, auditRepo)
+	cashbookSvc := service.NewCashbookService(expenseRepo, txm, auditRepo)
+	reportsSvc := service.NewReportsService(reportRepo, txm)
 	authPolicy := auth.Policy{
 		MaxAttempts:  cfg.LoginMaxAttempts,
 		Lockout:      cfg.LoginLockout,
@@ -91,6 +119,7 @@ func run(log *slog.Logger) error {
 		IdleTimeout:   120 * time.Second,
 		AuthSvc:       authSvc,
 		AuthHandlers:  authH,
+		APIRouter:     buildAPIRouter(httph.NewAPI(orderSvc, settingsSvc, catalogSvc, clientSvc, logisticsSvc, inventorySvc, cashbookSvc, reportsSvc, expenseRepo)),
 		SecureCookies: cfg.CookieSecure,
 		CookieDomain:  cfg.CookieDomain,
 	})
@@ -122,6 +151,12 @@ func run(log *slog.Logger) error {
 	pool.Close()
 	log.Info("serveur arrêté proprement")
 	return nil
+}
+
+func buildAPIRouter(api *httph.API) http.Handler {
+	r := chi.NewRouter()
+	api.Routes(r)
+	return r
 }
 
 func envOr(k, def string) string {

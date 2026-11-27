@@ -1,4 +1,3 @@
--- 0001_init : schéma complet Éclat Pressing (docs/migration/02-data-model.md)
 -- FCFA = BIGINT entiers ; quantités = NUMERIC(12,2) ; horodatages = TIMESTAMPTZ.
 
 CREATE SEQUENCE IF NOT EXISTS change_seq;
@@ -53,7 +52,7 @@ CREATE TABLE auth_sessions (
 CREATE INDEX idx_auth_sessions_expiry ON auth_sessions (expires_at);
 
 CREATE TABLE catalog_items (
-    id UUID PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     category TEXT NOT NULL,
     default_mode TEXT NOT NULL,
@@ -70,7 +69,7 @@ CREATE TABLE catalog_items (
 CREATE INDEX idx_catalog_category ON catalog_items (category, name);
 
 CREATE TABLE clients (
-    id UUID PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     full_name TEXT NOT NULL,
     phone TEXT NOT NULL,
     commune TEXT NOT NULL DEFAULT '',
@@ -88,8 +87,8 @@ CREATE INDEX idx_clients_name ON clients (full_name);
 CREATE INDEX idx_clients_archived ON clients (archived_at);
 
 CREATE TABLE client_wallet_entries (
-    id UUID PRIMARY KEY,
-    client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
     entry_date TIMESTAMPTZ NOT NULL DEFAULT now(),
     type TEXT NOT NULL CHECK (type IN ('recharge','utilisation','bonus')),
     amount_fcfa BIGINT NOT NULL,
@@ -99,10 +98,10 @@ CREATE TABLE client_wallet_entries (
 CREATE INDEX idx_wallet_client ON client_wallet_entries (client_id, entry_date DESC);
 
 CREATE TABLE orders (
-    id UUID PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     ticket_number TEXT NOT NULL UNIQUE,
     ticket_seq BIGINT NOT NULL,
-    client_id UUID REFERENCES clients(id),
+    client_id TEXT REFERENCES clients(id),
     client_name TEXT NOT NULL,
     client_phone TEXT NOT NULL,
     commune TEXT NOT NULL DEFAULT '',
@@ -135,9 +134,9 @@ CREATE INDEX idx_orders_client ON orders (client_id);
 CREATE INDEX idx_orders_voided ON orders (voided_at);
 
 CREATE TABLE order_items (
-    id UUID PRIMARY KEY,
-    order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
-    catalog_item_id UUID REFERENCES catalog_items(id),
+    id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    catalog_item_id TEXT REFERENCES catalog_items(id),
     name TEXT NOT NULL,
     mode TEXT NOT NULL,
     quantity NUMERIC(12,2) NOT NULL CHECK (quantity > 0),
@@ -156,8 +155,8 @@ CREATE TABLE order_items (
 CREATE INDEX idx_order_items_order ON order_items (order_id);
 
 CREATE TABLE order_claim_photos (
-    id UUID PRIMARY KEY,
-    order_id UUID NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
     caption TEXT NOT NULL DEFAULT '',
     item_name TEXT,
     captured_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -168,8 +167,8 @@ CREATE TABLE order_claim_photos (
 CREATE INDEX idx_claim_photos_order ON order_claim_photos (order_id);
 
 CREATE TABLE payments (
-    id UUID PRIMARY KEY,
-    order_id UUID REFERENCES orders(id),
+    id TEXT PRIMARY KEY,
+    order_id TEXT REFERENCES orders(id),
     ticket_number TEXT NOT NULL,
     client_name TEXT NOT NULL,
     amount_fcfa BIGINT NOT NULL CHECK (amount_fcfa > 0),
@@ -187,7 +186,7 @@ CREATE INDEX idx_payments_order ON payments (order_id);
 CREATE INDEX idx_payments_kind_date ON payments (kind, paid_at);
 
 CREATE TABLE expenses (
-    id UUID PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     label TEXT NOT NULL,
     category TEXT NOT NULL,
     amount_fcfa BIGINT NOT NULL CHECK (amount_fcfa > 0),
@@ -203,7 +202,7 @@ CREATE TABLE expenses (
 CREATE INDEX idx_expenses_date ON expenses (expense_date DESC, deleted_at);
 
 CREATE TABLE delivery_zones (
-    id UUID PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     commune TEXT NOT NULL,
     fee_fcfa BIGINT NOT NULL CHECK (fee_fcfa >= 0),
     pickup_fee_fcfa BIGINT NOT NULL DEFAULT 0 CHECK (pickup_fee_fcfa >= 0),
@@ -214,16 +213,16 @@ CREATE TABLE delivery_zones (
 );
 
 CREATE TABLE logistics_tasks (
-    id UUID PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     type TEXT NOT NULL CHECK (type IN ('enlevement','livraison')),
     status TEXT NOT NULL
         CHECK (status IN ('planifie','en_cours','effectue','annule')),
-    client_id UUID REFERENCES clients(id),
+    client_id TEXT REFERENCES clients(id),
     client_name TEXT NOT NULL,
     client_phone TEXT NOT NULL,
     commune TEXT NOT NULL DEFAULT '',
     address_detail TEXT NOT NULL DEFAULT '',
-    order_id UUID REFERENCES orders(id),
+    order_id TEXT REFERENCES orders(id),
     ticket_number TEXT,
     scheduled_date DATE NOT NULL,
     time_slot TEXT NOT NULL DEFAULT '',
@@ -240,7 +239,7 @@ CREATE INDEX idx_logistics_date ON logistics_tasks (scheduled_date, status);
 CREATE INDEX idx_logistics_order ON logistics_tasks (order_id);
 
 CREATE TABLE inventory_items (
-    id UUID PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     sku TEXT,
     category TEXT NOT NULL,
@@ -260,8 +259,8 @@ CREATE TABLE inventory_items (
 CREATE INDEX idx_inventory_category ON inventory_items (category, name);
 
 CREATE TABLE inventory_movements (
-    id UUID PRIMARY KEY,
-    item_id UUID NOT NULL REFERENCES inventory_items(id),
+    id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL REFERENCES inventory_items(id),
     item_name TEXT NOT NULL,
     type TEXT NOT NULL CHECK (type IN ('entree','sortie','ajustement')),
     quantity_delta NUMERIC(12,2) NOT NULL,

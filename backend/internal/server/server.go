@@ -25,7 +25,7 @@ type Deps struct {
 	IdleTimeout   time.Duration
 	AuthSvc       *service.AuthService // nil = phase 03 uniquement (tests)
 	AuthHandlers  *httph.AuthHandlers
-	API           http.Handler // routes métier /api/v1 (phase 06+)
+	APIRouter     http.Handler // routes métier /api/v1 (phase 05+) : chi.Router prêt
 	SecureCookies bool
 	CookieDomain  string
 }
@@ -62,8 +62,13 @@ func New(d Deps) *http.Server {
 		api := chi.NewRouter()
 		api.Use(httph.OriginGuard(d.CORSOrigins))
 		api.Use(httph.RequireAuth(d.AuthSvc))
-		if d.API != nil {
-			api.Mount("/", d.API)
+		if d.APIRouter != nil {
+			api.Mount("/", d.APIRouter)
+		} else {
+			// aucune route métier : /api/v1 répond 404 via une route factice
+			api.Get("/ping", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})
 		}
 		r.Mount("/api/v1", api)
 	}
