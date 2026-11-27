@@ -41,7 +41,7 @@
 | Inventaire | `service/others.go` | `/inventory/*` + movements | InventoryView | INT (seuil, dépense auto) + LIVE | **PASS** | — |
 | Sauvegarde/restore | `internal/backup` | `/backup/*` | SettingsView | INT + LIVE + pg_dump→restore vérifié | **PASS** | volume photos à sauvegarder en même temps que la base |
 | Import legacy v3 | `internal/backup` | `/backup/preview`+`restore` | SettingsView | INT + LIVE | **PASS** | fichiers v3 très anciens à re-tester à l'occasion d'une vraie migration client |
-| Sync offline push/pull | `service/sync.go` | `/sync/*` | OfflineBanner (pending/conflits) | INT 7/7 PG + UNIT 18/18 + LIVE complet | **PASS** | E2E navigateur manuel (checklist QA §2) |
+| Sync offline push/pull | `service/sync.go` | `/sync/*` | OfflineBanner (pending/conflits) | INT 7/7 PG + UNIT 18/18 + LIVE complet + **E2E Chromium 2/2** | **PASS** | parcours dépôt complet hors ligne reste dans la checklist manuelle |
 | PWA/service worker | — (frontend) | — | PWAInstallButton | build + checklist | **PASS** (build) | mise à jour SW à observer en prod |
 
 ## 3. Journal du smoke live (toutes vérifications exécutées sur serveur réel)
@@ -58,15 +58,16 @@ RETRY même operationId                      → duplicate, aucun doublon SQL (p
 PULL depuis cursor                          → changements incrémentaux, hasMore/cursor
 BACKUP export/preview/restore               → 200 (X-Backup-Confirm exigé)
 pg_dump→pg_restore base de contrôle         → nombres de lignes identiques
+E2E navigateur (Chromium, 2 scénarios offline) → PASS (bun run test:e2e)
 ```
 
 ## 4. Défauts non bloquants (priorités et plan)
 
 | # | Défaut | Priorité | Plan |
 |---|---|---|---|
-| 1 | Pas d'E2E navigateur automatisé (Playwright) ; checklist manuelle seulement | **P1** | ajouter `tests/e2e` Playwright (chromium) : login → dépôt → hors ligne → sync ; exécuter en CI ou poste de test avec réseau sortant libre |
+| 1 | ~~Pas d'E2E navigateur automatisé~~ **RÉSOLU** : `tests/e2e/e2e-offline.test.ts` (Chromium réel via `@sparticuz/chromium` npm) — 2 scénarios PASS : client créé hors ligne → bannière en attente → sync → présent côté serveur ; fermeture navigateur → outbox persisté → reprise → sync sans doublon | **P1** | exécuté ; à brancher en CI (réseau sortant libre) — `bun run test:e2e` |
 | 2 | Couverture unitaire services faible (17,5 %) — la logique est couverte par les INT | P2 | extraire des tests unitaires pricing/orders sans DB pour feedback rapide ; viser ≥ 50 % sur `pricing.go` |
-| 3 | docker-compose non validé sur démon Docker dans l'environnement d'audit | P1 | exécuter `docker compose up --build && curl /readyz` sur l'hôte cible avant mise en service (checklist PRODUCTION §10) |
+| 3 | ~~docker-compose non validé sur démon Docker~~ **COUVERT EN CI** : job `compose` (.github/workflows/ci.yml) — `docker compose up --build`, healthchecks, setup auth 204, arrêt propre ; à confirmer une fois sur l'hôte cible réel | P1 | workflow CI fourni |
 | 4 | `ECLAT_CORS_ORIGINS` vide par défaut : en prod, aucune mutation navigateur possible si non renseigné | P2 | documenté (PRODUCTION §1, diagnostic 403) ; vérifier au déploiement |
 | 5 | Rotation des sessions non renouvelée à l'activité (TTL fixe 7 j) | P3 | glissement de fenêtre optionnel si l'exploitant le demande |
 | 6 | Export JSON de gros volume synchrone (timeout client 120 s) | P3 | si besoin : export en fichier + téléchargement (chunking) |

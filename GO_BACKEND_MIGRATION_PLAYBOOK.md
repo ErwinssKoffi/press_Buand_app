@@ -1094,16 +1094,16 @@ Ne confonds jamais compilation réussie et logiciel métier prêt pour la produc
 
 À cocher au fur et à mesure. Une phase ne doit être déclarée terminée qu'après vérification des livrables et des critères d'acceptation.
 
-- [ ] **01 — Audit :** cartographie réelle et risques documentés.
-- [ ] **02 — Architecture :** modèle relationnel, flux, API et OpenAPI validés.
-- [ ] **03 — Infrastructure :** backend Go, PostgreSQL, migrations, Docker et healthchecks opérationnels.
-- [ ] **04 — Sécurité :** authentification, sessions, rate limit, séparation des secrets et tests.
-- [ ] **05 — Métier :** règles de pressing, blanchisserie, caisse, paiements, fidélité, stocks et logistique dans Go.
-- [ ] **06 — API :** routes REST protégées, documentées et testées.
-- [ ] **07 — Données :** backup v3 importable, prévisualisation, restauration et export vérifiés.
-- [ ] **08 — Frontend :** React connecté à Go, expérience existante préservée.
-- [ ] **09 — Offline :** cache, outbox, idempotence, réconciliation et conflits testés.
-- [ ] **10 — Livraison :** E2E, sécurité, Docker, backup/restore et documentation de production validés.
+- [x] **01 — Audit :** cartographie réelle et risques documentés. (docs/migration/01-*.md)
+- [x] **02 — Architecture :** modèle relationnel, flux, API et OpenAPI validés. (docs/migration/02-*.md + openapi.yaml)
+- [x] **03 — Infrastructure :** backend Go, PostgreSQL, migrations, Docker et healthchecks opérationnels. (/healthz, /readyz, docker-compose.yml)
+- [x] **04 — Sécurité :** authentification, sessions, rate limit, séparation des secrets et tests. (argon2id, lockout persistant, 429)
+- [x] **05 — Métier :** règles de pressing, blanchisserie, caisse, paiements, fidélité, stocks et logistique dans Go. (tests service + intégration PG)
+- [x] **06 — API :** routes REST protégées, documentées et testées. (api_integration_test.go)
+- [x] **07 — Données :** backup v3 importable, prévisualisation, restauration et export vérifiés. (internal/backup + tests)
+- [x] **08 — Frontend :** React connecté à Go, expérience existante préservée. (src/services/api + backend.ts)
+- [x] **09 — Offline :** cache, outbox, idempotence, réconciliation et conflits testés. (7 suites PG + 9 suites bun + E2E navigateur)
+- [x] **10 — Livraison :** E2E, sécurité, Docker, backup/restore et documentation de production validés. (docs/migration/10-final-audit.md, CI, docs/deployment/)
 
 # 8. Commandes de contrôle de référence
 
