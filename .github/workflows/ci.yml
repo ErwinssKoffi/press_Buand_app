@@ -33,11 +33,20 @@ jobs:
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - name: go vet
         working-directory: backend
-        # sortie remontée en annotations (logs de run non lisibles hors UI)
+        # go.sum du dépôt est canonique (sumdb officielle). En cas d'écart,
+        # régénération de référence affichée en annotation (logs non lisibles hors UI).
         run: |
           code=0
           go vet ./... > /tmp/vet.log 2>&1 || code=$?
-          echo "::error title=go vet::$(tail -c 900 /tmp/vet.log | tr '\n' ';')"
+          if [ $code -ne 0 ]; then
+            grep -q "checksum mismatch\|missing go.sum" /tmp/vet.log && {
+              rm go.sum
+              go mod tidy >/dev/null 2>&1 || true
+              go mod tidy >/dev/null 2>&1
+              echo "::error title=go.sum canonique::$(< go.sum)"
+            }
+            echo "::error title=go vet::$(tail -c 1200 /tmp/vet.log | tr '\n' ';')"
+          fi
           exit $code
       - name: go test (unitaires + intégration PostgreSQL)
         working-directory: backend
