@@ -119,6 +119,31 @@ export default defineConfig(() => {
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      // Environnements de prévisualisation hébergés (e2b) : accepter l'hôte proxifié.
+      allowedHosts: true,
+      // Proxy dev vers le backend Go (Prompt 08) : frontend :3000, backend :8080.
+      // L'en-tête Origin est retiré : le navigateur parle au backend comme
+      // same-origin (pas de CORS en dev ; en prod : same-origin ou CORS stricte).
+      proxy: {
+        '/api': {
+          target: process.env.BACKEND_ORIGIN || 'http://127.0.0.1:8080',
+          changeOrigin: true,
+          configure(proxy) {
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.removeHeader('origin');
+            });
+          },
+        },
+        '/auth': {
+          target: process.env.BACKEND_ORIGIN || 'http://127.0.0.1:8080',
+          changeOrigin: true,
+          configure(proxy) {
+            proxy.on('proxyReq', (proxyReq) => {
+              proxyReq.removeHeader('origin');
+            });
+          },
+        },
+      },
     },
   };
 });

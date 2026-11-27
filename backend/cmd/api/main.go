@@ -94,6 +94,7 @@ func run(log *slog.Logger) error {
 	// Services métier
 	orderSvc := service.NewOrderService(orderRepo, catalogRepo, paymentRepo, settingsRepo,
 		clientRepo, ticketRepo, zoneRepo, txm, auditRepo)
+	orderSvc.SetStorageDir(cfg.StorageDir)
 	settingsSvc := service.NewSettingsService(settingsRepo, txm, auditRepo)
 	catalogSvc := service.NewCatalogService(catalogRepo, txm, auditRepo)
 	clientSvc := service.NewClientService(clientRepo, paymentRepo, txm, auditRepo)

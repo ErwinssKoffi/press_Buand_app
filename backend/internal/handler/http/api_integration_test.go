@@ -68,6 +68,7 @@ func newFullStackServer(t *testing.T) (*httptest.Server, *pgxpool.Pool) {
 	zoneRepo := &postgres.ZoneRepo{}
 	expenseRepo := &postgres.ExpenseRepo{}
 	orderSvc := service.NewOrderService(orderRepo, catalogRepo, paymentRepo, settingsRepo, clientRepo, ticketRepo, zoneRepo, txm, audit)
+	orderSvc.SetStorageDir(t.TempDir())
 	api := httph.NewAPI(orderSvc,
 		service.NewSettingsService(settingsRepo, txm, audit),
 		service.NewCatalogService(catalogRepo, txm, audit),
@@ -245,7 +246,6 @@ func TestAPIFullStackIntegration(t *testing.T) {
 	if st, body := c.do("POST", "/api/v1/orders", orderBody); st != 409 || codeOf(body) != "conflict" {
 		t.Fatalf("order replay: %d %v", st, body)
 	}
-
 	// mapping : aperçu sans écriture
 	if st, m := c.do("POST", "/api/v1/orders/mapping", map[string]any{
 		"clientId": clID, "items": orderBody["items"], "deliveryZoneId": "zone-cocody", "usePrepaid": true}); st != 200 {
@@ -395,6 +395,43 @@ func TestAPIFullStackIntegration(t *testing.T) {
 	if st, _ := c.do("GET", "/api/v1/sync/status", nil); st != 501 {
 		t.Fatalf("sync stub: %d", st)
 	}
+
+	// photo de réserve : data URL → stockage privé → lecture authentifiée
+	photoOrder := map[string]any{
+		"clientId": clID,
+		"items": []map[string]any{{
+			"catalogItemId": "cat-chemise", "name": "Chemise",
+			"mode": "lavage_repassage", "quantity": 1, "unit": "pièce"}},
+		"initialPaymentMethod": "especes",
+		"idempotencyKey":       "ord-photo",
+		"claimPhotos": []map[string]any{{
+			"id": "ph-t1", "caption": "Tache", "itemName": "Chemise",
+			"capturedAt": "2026-11-27T10:00:00Z",
+			"url":        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="}},
+	}
+	st, pord := c.do("POST", "/api/v1/orders", photoOrder)
+	if st != 201 {
+		t.Fatalf("order photo: %d %v", st, pord)
+	}
+	phArr, _ := pord["claimPhotos"].([]any)
+	if len(phArr) != 1 {
+		t.Fatalf("claimPhotos vides: %v", pord["claimPhotos"])
+	}
+	phURL := phArr[0].(map[string]any)["url"].(string)
+	if strings.HasPrefix(phURL, "data:") {
+		t.Fatalf("photo data URL stockée en base (interdit): %s", phURL)
+	}
+	reqP, _ := http.NewRequest("GET", ts.URL+phURL, nil)
+	respP, err := c.hc.Do(reqP)
+	if err != nil {
+		t.Fatalf("photo GET: %v", err)
+	}
+	pdata, _ := io.ReadAll(respP.Body)
+	respP.Body.Close()
+	if respP.StatusCode != 200 || len(pdata) == 0 || respP.Header.Get("Content-Type") == "" {
+		t.Fatalf("photo lecture: %d %d octets: %s (url=%s)", respP.StatusCode, len(pdata), string(pdata), phURL)
+	}
+	_ = ordID
 
 	// --- bootstrap ---
 	st, boot := c.do("GET", "/api/v1/bootstrap", nil)

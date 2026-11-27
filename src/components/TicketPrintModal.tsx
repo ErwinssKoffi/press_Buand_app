@@ -29,6 +29,7 @@ import {
   STATUS_META,
 } from '../utils/formatters';
 import { exportReceiptPdf } from '../utils/receiptPdf';
+import { photoSrc } from '../utils/photos';
 
 interface TicketPrintModalProps {
   order: PressingOrder;
@@ -1027,7 +1028,7 @@ export const TicketPrintModal: React.FC<TicketPrintModalProps> = ({
                   className="rounded-lg border border-slate-200 bg-slate-50 p-1.5 text-left hover:border-teal-600 cursor-pointer"
                 >
                   <img
-                    src={ph.dataUrl}
+                    src={photoSrc(ph)}
                     alt={ph.caption}
                     className="h-20 w-full rounded object-cover"
                   />
@@ -1129,7 +1130,7 @@ export const TicketPrintModal: React.FC<TicketPrintModalProps> = ({
               </button>
             </div>
             <img
-              src={zoomedPhoto.dataUrl}
+              src={photoSrc(zoomedPhoto)}
               alt={zoomedPhoto.caption}
               className="w-full max-h-[70vh] rounded-lg object-contain bg-slate-100"
             />

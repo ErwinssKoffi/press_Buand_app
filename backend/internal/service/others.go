@@ -413,6 +413,13 @@ func (s *LogisticsService) Save(ctx context.Context, t *pressing.LogisticsTask) 
 	if !pressing.ValidLogisticsType(string(t.Type)) || t.ClientName == "" || t.ScheduledDate == "" {
 		return nil, fmt.Errorf("%w: tâche invalide", ErrValidation)
 	}
+	// références vides (client de passage, tâche hors commande) → NULL, pas de FK violée
+	if t.ClientID != nil && *t.ClientID == "" {
+		t.ClientID = nil
+	}
+	if t.OrderID != nil && *t.OrderID == "" {
+		t.OrderID = nil
+	}
 	if t.Status == "" {
 		t.Status = pressing.LogisticsPlanifie
 	}

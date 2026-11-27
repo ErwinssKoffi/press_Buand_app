@@ -2,8 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/erwinsskoffi/press_backend/internal/domain/pressing"
@@ -114,16 +119,17 @@ type Clock func() time.Time
 
 // OrderService : création transactionnelle, statuts, paiements, annulation.
 type OrderService struct {
-	orders   OrderStore
-	catalog  CatalogStore
-	payments PaymentStore
-	settings SettingsStore
-	clients  ClientStore
-	tickets  TicketStore
-	zones    ZoneStore
-	txm      TxRunner
-	audit    AuditLogger
-	now      Clock
+	orders     OrderStore
+	catalog    CatalogStore
+	payments   PaymentStore
+	settings   SettingsStore
+	clients    ClientStore
+	tickets    TicketStore
+	zones      ZoneStore
+	txm        TxRunner
+	audit      AuditLogger
+	now        Clock
+	storageDir string
 }
 
 type TxRunner interface {
@@ -136,6 +142,47 @@ func NewOrderService(orders OrderStore, catalog CatalogStore, payments PaymentSt
 		orders: orders, catalog: catalog, payments: payments, settings: settings, clients: clients,
 		tickets: tickets, zones: zones, txm: txm, audit: audit, now: time.Now,
 	}
+}
+
+// SetStorageDir : racine du stockage privé des photos (stratégie Prompt 08 —
+// jamais de data URL en base, fichiers hors racine HTTP).
+func (s *OrderService) SetStorageDir(dir string) { s.storageDir = dir }
+
+// photoDataRE : data URL image/jpeg|png|webp.
+var photoDataRE = regexp.MustCompile(`^data:image/(jpeg|png|webp);base64,`)
+
+// materializePhotos : décode les data URLs en fichiers privés, renvoie les
+// photos avec URL = chemin de stockage (le repo écrit storage_path tel quel).
+func (s *OrderService) materializePhotos(orderID string, photos []pressing.OrderClaimPhoto) ([]pressing.OrderClaimPhoto, error) {
+	if len(photos) == 0 || s.storageDir == "" {
+		return photos, nil
+	}
+	out := make([]pressing.OrderClaimPhoto, 0, len(photos))
+	for _, p := range photos {
+		if m := photoDataRE.FindStringSubmatch(p.URL); m != nil {
+			raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(p.URL, m[0]))
+			if err != nil {
+				return nil, fmt.Errorf("photo %s: base64 invalide: %w", p.ID, err)
+			}
+			if len(raw) == 0 {
+				return nil, fmt.Errorf("photo %s: vide", p.ID)
+			}
+			if len(raw) > 5<<20 {
+				return nil, fmt.Errorf("photo %s: trop volumineuse (> 5 Mo)", p.ID)
+			}
+			rel := filepath.Join("photos", orderID, p.ID+"."+m[1])
+			abs := filepath.Join(s.storageDir, rel)
+			if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil {
+				return nil, fmt.Errorf("photo %s: %w", p.ID, err)
+			}
+			if err := os.WriteFile(abs, raw, 0o640); err != nil {
+				return nil, fmt.Errorf("photo %s: %w", p.ID, err)
+			}
+			p.URL = "/" + rel
+		}
+		out = append(out, p)
+	}
+	return out, nil
 }
 
 // Create : transaction unique (ADR A21, corrige C4/C3/E5).
@@ -251,8 +298,16 @@ func (s *OrderService) Create(ctx context.Context, in PricingInput, photos []pre
 			}
 		}
 		if len(photos) > 0 {
+			photos, perr := s.materializePhotos(o.ID, photos)
+			if perr != nil {
+				return perr
+			}
 			if err := s.orders.SetClaimPhotos(ctx, q, o.ID, photos); err != nil {
 				return err
+			}
+			// URL publique authentifiée (jamais le chemin de stockage privé)
+			for i := range photos {
+				photos[i].URL = "/api/v1/orders/" + o.ID + "/photos/" + photos[i].ID
 			}
 			o.ClaimPhotos = photos
 		}
@@ -474,11 +529,23 @@ func (s *OrderService) List(ctx context.Context, f pressing.OrderFilter) ([]*pre
 	return out, total, err
 }
 
-// PhotoBytes : contenu binaire d'une photo de réclamation (stocké bytea).
+// PhotoBytes : contenu binaire d'une photo de réserve (fichier privé, via
+// storage_path ; jamais servi depuis la racine HTTP).
 func (s *OrderService) PhotoBytes(ctx context.Context, orderID, photoID string) ([]byte, error) {
-	var data []byte
+	var path string
 	err := s.txm.WithTx(ctx, func(ctx context.Context, q dbtx.Querier) error {
-		return q.QueryRow(ctx, `SELECT data FROM order_claim_photos WHERE id=$1 AND order_id=$2`, photoID, orderID).Scan(&data)
+		return q.QueryRow(ctx, `SELECT storage_path FROM order_claim_photos WHERE id=$1 AND order_id=$2`, photoID, orderID).Scan(&path)
 	})
-	return data, err
+	if err != nil {
+		return nil, err
+	}
+	if s.storageDir == "" {
+		return nil, fmt.Errorf("stockage photos non configuré")
+	}
+	clean := filepath.Clean(strings.TrimPrefix(path, "/"))
+	abs := filepath.Join(s.storageDir, clean)
+	if !strings.HasPrefix(abs, filepath.Clean(s.storageDir)+string(os.PathSeparator)) {
+		return nil, fmt.Errorf("chemin photo invalide")
+	}
+	return os.ReadFile(abs)
 }

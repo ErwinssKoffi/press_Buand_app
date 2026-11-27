@@ -7,6 +7,7 @@ import {
   Lock,
   Menu,
   Package,
+  WifiOff,
   PlusCircle,
   ScanBarcode,
   Settings,
@@ -33,9 +34,7 @@ import {
   PressingSettings,
 } from './types/pressing';
 import {
-  clearAllBusinessData,
   createOrderWithPayment,
-  DEFAULT_SETTINGS,
   deleteCatalogItem,
   deleteClient,
   deleteDeliveryZone,
@@ -43,11 +42,9 @@ import {
   deleteInventoryItem,
   deleteLogisticsTask,
   deleteOrder,
-  importBackupJSON,
   loadAllData,
   recordInventoryMovement,
   recordOrderPayment,
-  resetDemoData,
   saveCatalogItem,
   saveClient,
   saveDeliveryZone,
@@ -58,7 +55,9 @@ import {
   topUpClientPrepaid,
   updateLogisticsStatus,
   updateOrderStatus,
-} from './db/localDb';
+} from './services/backend';
+import { DEFAULT_SETTINGS, normalizeSettings } from './db/localDb';
+import { authApi, backupApi, isApiError, isOfflineError, type AuthState, type BackupReport } from './services/api';
 import { getTodayISO, STATUS_META } from './utils/formatters';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineBanner } from './components/OfflineBanner';
@@ -111,6 +110,9 @@ export default function App() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [isUnlocked, setIsUnlocked] = useState(false);
   const [forceOnboarding, setForceOnboarding] = useState(false);
+  const [authState, setAuthState] = useState<AuthState | null>(null);
+  const [dataFromCache, setDataFromCache] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const refreshData = useCallback(async () => {
     const data = await loadAllData();
@@ -124,12 +126,56 @@ export default function App() {
     setLogistics(data.logistics);
     setInventory(data.inventory);
     setInventoryMovements(data.inventoryMovements);
+    setDataFromCache(Boolean(data.fromCache));
   }, []);
+
+  /**
+   * Initialisation serveur (Prompt 08) : état du secret → session existante →
+   * bootstrap. Hors-ligne/injoignable : fallback IndexedDB en lecture (banneau).
+   */
+  const initSession = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const st = await authApi.status();
+      setAuthState(st.state);
+      if (st.state !== 'virgin') {
+        try {
+          await authApi.me(); // session valide (cookie httpOnly)
+          await refreshData();
+          setIsUnlocked(true);
+        } catch {
+          // pas de session valide : écran de connexion (le cache local reste prêt)
+          try {
+            await refreshData();
+          } catch {
+            /* premier lancement sans cache : écrans vides jusqu'à connexion */
+          }
+        }
+      }
+    } catch (err) {
+      // backend injoignable : last known snapshot (IndexedDB) en lecture seule
+      try {
+        await refreshData();
+      } catch {
+        /* aucun cache disponible */
+      }
+      setLoadError(
+        isOfflineError(err)
+          ? 'Serveur injoignable — données locales en lecture seule.'
+          : isApiError(err)
+            ? err.message
+            : 'Erreur inconnue au chargement.'
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [refreshData]);
 
   useEffect(() => {
     registerSW({ immediate: true });
-    refreshData().finally(() => setLoading(false));
-  }, [refreshData]);
+    initSession();
+  }, [initSession]);
 
   const selectedOrder = orders.find((o) => o.id === selectedOrderId) || null;
 
@@ -241,19 +287,30 @@ export default function App() {
     await refreshData();
   };
 
-  const handleImportBackup = async (backup: DatabaseBackup) => {
-    await importBackupJSON(backup);
-    await refreshData();
-  };
-
-  const handleClearAllData = async () => {
-    await clearAllBusinessData();
-    await refreshData();
-  };
-
-  const handleResetDemoData = async () => {
-    await resetDemoData();
-    await refreshData();
+  /**
+   * Import serveur en deux étapes obligatoires : preview (aucune écriture) →
+   * confirmation explicite si écrasement de données réelles → restore.
+   * Retourne le rapport (affiché par SettingsView) ou null si annulé.
+   */
+  const handleImportBackup = async (backup: DatabaseBackup): Promise<BackupReport | null> => {
+    const preview = await backupApi.preview(backup);
+    if (preview.status !== 'preview') {
+      return preview; // déjà appliqué (hash identique) : rien à faire
+    }
+    const warnings = [...(preview.incompatibilities ?? []), ...(preview.anomalies ?? [])];
+    if (warnings.length > 0) {
+      const ok = window.confirm(
+        `Rapport de preview (aucune donnée modifiée) :\n\n` +
+          warnings.slice(0, 8).join('\n') +
+          `\n\nConfirmer la restauration ? Les données métier actuelles du serveur seront remplacées.`
+      );
+      if (!ok) return null;
+    }
+    const report = await backupApi.restore(backup, { confirm: true });
+    if (report.status !== 'échec') {
+      await refreshData();
+    }
+    return report;
   };
 
   const handleSaveLogisticsTask = async (task: LogisticsTask) => {
@@ -317,27 +374,29 @@ export default function App() {
     await refreshData();
   };
 
-  const handleSetupPin = async (pinHash: string, pinSalt: string) => {
-    await saveSettings({ ...settings, pinHash, pinSalt });
-    await refreshData();
+  /** Setup serveur : Argon2id côté backend, puis connexion immédiate. */
+  const handleSetupPin = async (pin: string) => {
+    await authApi.setup(pin);
+    await authApi.login(pin);
+    setAuthState('argon2id');
   };
 
-  const handleResetPin = async () => {
-    await saveSettings({ ...settings, pinHash: undefined, pinSalt: undefined });
-    await refreshData();
+  const handleSubmitPin = async (pin: string) => {
+    await authApi.login(pin);
+    setAuthState((prev) => prev ?? 'argon2id');
   };
 
+  /**
+   * Onboarding serveur : première installation = base vierge côté PostgreSQL
+   * (aucun effacement automatique — interdit). startFresh est sans objet :
+   * il n'y a rien à effacer, les données de démonstration n'existent pas ici.
+   */
   const handleCompleteOnboarding = async (
     nextSettings: PressingSettings,
-    options: { startFresh: boolean }
+    _options: { startFresh: boolean }
   ) => {
-    if (options.startFresh) {
-      await clearAllBusinessData();
-    }
     await saveSettings({
-      ...nextSettings,
-      pinHash: settings.pinHash,
-      pinSalt: settings.pinSalt,
+      ...normalizeSettings(nextSettings),
       onboardingCompleted: true,
     });
     await refreshData();
@@ -358,9 +417,21 @@ export default function App() {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
         <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 space-y-4">
-          <div className="h-5 w-44 rounded bg-slate-200" />
-          <div className="h-3 w-64 rounded bg-slate-100" />
-          <div className="h-12 w-full rounded-xl bg-slate-100" />
+          <div className="h-5 w-44 rounded bg-slate-200 animate-pulse" />
+          <div className="h-3 w-64 rounded bg-slate-100 animate-pulse" />
+          {loadError && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-900">
+              {loadError}
+              <button
+                type="button"
+                onClick={() => initSession()}
+                className="ml-2 underline underline-offset-2 font-semibold cursor-pointer"
+              >
+                Réessayer
+              </button>
+            </div>
+          )}
+          <div className="h-12 w-full rounded-xl bg-slate-100 animate-pulse" />
         </div>
       </div>
     );
@@ -371,9 +442,13 @@ export default function App() {
       <>
         <LoginView
           settings={settings}
+          authState={authState}
           onSetupPin={handleSetupPin}
-          onUnlockSuccess={() => setIsUnlocked(true)}
-          onResetPin={handleResetPin}
+          onSubmitPin={handleSubmitPin}
+          onUnlockSuccess={() => {
+            setIsUnlocked(true);
+            refreshData();
+          }}
         />
         <OfflineBanner />
       </>
@@ -428,7 +503,7 @@ export default function App() {
 
         <div className="border-t border-slate-200 p-4 text-xs text-slate-500 space-y-1">
           <div className="font-medium text-slate-700 truncate">{settings.commune}</div>
-          <div>Base locale hors-ligne · FCFA</div>
+          <div>Backend Go · PostgreSQL · FCFA</div>
         </div>
       </aside>
 
@@ -516,7 +591,7 @@ export default function App() {
                 setIsUnlocked(false);
               }}
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              title="Verrouiller le comptoir (PIN 5 chiffres)"
+              title="Verrouiller le comptoir (retour à l'écran PIN)"
             >
               <Lock className="h-3.5 w-3.5 text-slate-600" />
               <span className="hidden sm:inline">Verrouiller</span>
@@ -536,6 +611,15 @@ export default function App() {
 
         {/* Content Viewport */}
         <main className="no-print flex-1 p-4 sm:p-8 max-w-[1440px] w-full mx-auto">
+          {dataFromCache && (
+            <div className="mb-4 flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-medium text-amber-900">
+              <WifiOff className="h-3.5 w-3.5 text-amber-700" />
+              <span>
+                Serveur injoignable — instantané local en lecture seule. Les écritures
+                reprendront à la reconnexion (retry : rechargement).
+              </span>
+            </div>
+          )}
           {loading ? (
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
@@ -664,8 +748,6 @@ export default function App() {
                   clientsCount={clients.length}
                   onSaveSettings={handleSaveSettings}
                   onImportBackup={handleImportBackup}
-                  onClearAllData={handleClearAllData}
-                  onResetDemoData={handleResetDemoData}
                   onReopenOnboarding={() => setForceOnboarding(true)}
                 />
               )}

@@ -14,18 +14,18 @@ import {
 } from 'lucide-react';
 import atelierHeroImg from '../assets/images/pressing_atelier_hero_1795762948101.jpg';
 import { PressingSettings } from '../types/pressing';
-import {
-  generatePinSaltHex,
-  hashFiveDigitPin,
-  isValidFiveDigitPin,
-  verifyFiveDigitPin,
-} from '../utils/pinAuth';
+import { isValidFiveDigitPin } from '../utils/pinAuth';
+import { isApiError, isOfflineError, type AuthState } from '../services/api';
 
 interface LoginViewProps {
   settings: PressingSettings;
-  onSetupPin: (pinHash: string, pinSalt: string) => Promise<void>;
+  /** État du secret côté serveur : virgin (création) | legacy | argon2id (déverrouillage). */
+  authState: AuthState | null;
+  /** Première configuration : setup serveur puis connexion automatique (App). */
+  onSetupPin: (pin: string) => Promise<void>;
+  /** Déverrouillage : POST /auth/login (401 = mauvais PIN, 429 = verrouillé). */
+  onSubmitPin: (pin: string) => Promise<void>;
   onUnlockSuccess: () => void;
-  onResetPin: () => Promise<void>;
 }
 
 const PIN_LENGTH = 5;
@@ -57,11 +57,12 @@ const WORKFLOW_STEPS = [
 
 export const LoginView: React.FC<LoginViewProps> = ({
   settings,
+  authState,
   onSetupPin,
+  onSubmitPin,
   onUnlockSuccess,
-  onResetPin,
 }) => {
-  const hasExistingPin = Boolean(settings.pinHash && settings.pinSalt);
+  const hasExistingPin = authState !== 'virgin';
 
   const [pinDigits, setPinDigits] = useState<string[]>(Array(PIN_LENGTH).fill(''));
   const [confirmDigits, setConfirmDigits] = useState<string[]>(Array(PIN_LENGTH).fill(''));
@@ -74,7 +75,6 @@ export const LoginView: React.FC<LoginViewProps> = ({
   const [failedAttempts, setFailedAttempts] = useState(0);
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
   const [showWorkflow, setShowWorkflow] = useState(false);
-  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
 
   const pinInputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const confirmInputRefs = useRef<(HTMLInputElement | null)[]>([]);
@@ -93,7 +93,6 @@ export const LoginView: React.FC<LoginViewProps> = ({
     setActiveGroup('pin');
     setActiveIndex(0);
     setErrorMsg('');
-    setConfirmResetOpen(false);
   }, [hasExistingPin]);
 
   const focusBox = (group: 'pin' | 'confirm', idx: number) => {
@@ -273,14 +272,23 @@ export const LoginView: React.FC<LoginViewProps> = ({
           focusBox('confirm', 0);
           return;
         }
-
-        const salt = generatePinSaltHex(16);
-        const hash = await hashFiveDigitPin(pinValue, salt);
-        await onSetupPin(hash, salt);
+        // Setup serveur : le PIN n'est jamais stocké ici — le backend le hache
+        // en Argon2id (cookie de session httpOnly, rien en localStorage).
+        await onSetupPin(pinValue);
         onUnlockSuccess();
       } else {
-        const ok = await verifyFiveDigitPin(pinValue, settings.pinSalt, settings.pinHash);
-        if (!ok) {
+        try {
+          await onSubmitPin(pinValue);
+        } catch (err) {
+          if (isOfflineError(err)) {
+            setErrorMsg('Serveur injoignable. Vérifiez la connexion puis réessayez.');
+            return;
+          }
+          if (isApiError(err) && err.status === 429) {
+            setCooldownSeconds(30);
+            setErrorMsg('Compte verrouillé côté serveur. Réessayez dans quelques instants.');
+            return;
+          }
           const nextAttempts = failedAttempts + 1;
           setFailedAttempts(nextAttempts);
           setPinDigits(Array(PIN_LENGTH).fill(''));
@@ -299,24 +307,9 @@ export const LoginView: React.FC<LoginViewProps> = ({
           }
           return;
         }
-
         setFailedAttempts(0);
         onUnlockSuccess();
       }
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleConfirmReset = async () => {
-    setSubmitting(true);
-    try {
-      await onResetPin();
-      setConfirmResetOpen(false);
-      setFailedAttempts(0);
-      setCooldownSeconds(0);
-      setPinDigits(Array(PIN_LENGTH).fill(''));
-      setConfirmDigits(Array(PIN_LENGTH).fill(''));
     } finally {
       setSubmitting(false);
     }
@@ -545,7 +538,7 @@ export const LoginView: React.FC<LoginViewProps> = ({
               {renderDigitGroup(
                 'pin',
                 pinDigits,
-                hasExistingPin ? 'Code PIN (5 chiffres)' : 'Choisir un PIN (5 chiffres)',
+                hasExistingPin ? 'Code PIN (5 chiffres)' : 'Choisir un PIN (5 chiffres, serveur)',
                 pinInputRefs
               )}
 
@@ -631,45 +624,15 @@ export const LoginView: React.FC<LoginViewProps> = ({
             </form>
           </div>
 
-          {/* Footer / Guarded Forgotten PIN Reset */}
+          {/* Footer : la réinitialisation du PIN est opérée côté serveur uniquement */}
           <div className="mt-6 border-t border-slate-100 pt-4 space-y-2.5">
             {hasExistingPin ? (
-              !confirmResetOpen ? (
-                <div className="flex items-center justify-between gap-2 text-xs">
-                  <span className="text-slate-400">Stockage chiffré localement</span>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmResetOpen(true)}
-                    className="font-medium text-slate-600 hover:text-slate-900 underline underline-offset-2 cursor-pointer"
-                  >
-                    Code PIN oublié ?
-                  </button>
-                </div>
-              ) : (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 space-y-2">
-                  <p className="text-[11px] leading-relaxed text-amber-950">
-                    La réinitialisation efface le code PIN actuel sur ce poste local sans supprimer
-                    vos tickets ni vos clients, et vous invite à créer un nouveau PIN à 5 chiffres.
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={submitting}
-                      onClick={handleConfirmReset}
-                      className="rounded-lg bg-amber-700 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-amber-800 cursor-pointer"
-                    >
-                      Réinitialiser le PIN
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmResetOpen(false)}
-                      className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-[11px] font-medium text-amber-900 hover:bg-amber-100 cursor-pointer"
-                    >
-                      Annuler
-                    </button>
-                  </div>
-                </div>
-              )
+              <div className="flex items-center justify-between gap-2 text-xs">
+                <span className="text-slate-400">Secret haché côté serveur (Argon2id)</span>
+                <span className="text-slate-500">
+                  Code PIN oublié ? Contactez l&apos;opérateur technique.
+                </span>
+              </div>
             ) : (
               <p className="text-[11px] text-slate-500 leading-relaxed">
                 Étape suivante : après avoir créé votre code PIN, un assistant en 4 étapes vous
