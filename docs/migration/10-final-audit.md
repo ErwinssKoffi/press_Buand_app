@@ -59,6 +59,12 @@ PULL depuis cursor                          → changements incrémentaux, hasMo
 BACKUP export/preview/restore               → 200 (X-Backup-Confirm exigé)
 pg_dump→pg_restore base de contrôle         → nombres de lignes identiques
 E2E navigateur (Chromium, 2 scénarios offline) → PASS (bun run test:e2e)
+CI GitHub Actions → SUCCESS : backend (gofmt/vet/tests PG réels + build image),
+frontend (tsc + bun tests + build PWA), docker compose up réel + healthz/readyz
++ setup/login ; corrections déclenchées par la CI : go.sum canonique (le miroir
+GOPROXY du sandbox re-empaquette les archives — variante -modfile non committée
+pour le sandbox), go test -p 1 (packages sérialisés sur bases partagées),
+ordre des sections du test full-stack (photo avant restore, sinon 404)
 ```
 
 ## 4. Défauts non bloquants (priorités et plan)
