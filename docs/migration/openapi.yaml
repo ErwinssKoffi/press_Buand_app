@@ -1,0 +1,670 @@
+openapi: 3.1.0
+info:
+  title: Éclat Pressing API
+  version: 1.0.0
+  description: API REST du backend Go (Éclat Pressing). Auth par cookie de session opaque `eclat_session`. Montants en entiers FCFA.
+servers:
+  - url: /api/v1
+tags: [health, auth, bootstrap, settings, catalog, clients, orders, cashbook, logistics, inventory, backup, sync]
+paths:
+  /healthz:
+    get: {tags: [health], summary: Vivacité du processus, responses: {'200': {description: OK}}}
+  /readyz:
+    get: {tags: [health], summary: Accessibilité base de données, responses: {'200': {description: OK}, '503': {description: Base indisponible}}}
+  /auth/status:
+    get:
+      tags: [auth]
+      summary: État des credentials
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/AuthStatus'}}}}}
+  /auth/setup:
+    post:
+      tags: [auth]
+      summary: Création du secret opérateur (installation vierge uniquement)
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SecretIn'}}}}
+      responses: {'204': {description: Créé}, '409': {description: Déjà configuré}, '422': {description: Secret trop faible}}
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Connexion (session cookie)
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [pinOrPassword], properties: {pinOrPassword: {type: string}, deviceId: {type: string}}}}}}
+      responses:
+        '200': {description: Connecté, content: {application/json: {schema: {$ref: '#/components/schemas/Me'}}}}
+        '401': {description: Secret invalide (compteur/lockout inclus dans details)}
+        '429': {description: rate_limited}
+  /auth/logout:
+    post: {tags: [auth], summary: Déconnexion (révocation), responses: {'204': {description: OK}}}
+  /auth/me:
+    get: {tags: [auth], summary: Session courante, responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Me'}}}}, '401': {description: unauthorized}}}
+  /auth/change-pin:
+    post:
+      tags: [auth]
+      summary: Changement du secret
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [currentSecret, newSecret], properties: {currentSecret: {type: string}, newSecret: {type: string}}}}}}
+      responses: {'204': {description: Changé}, '401': {description: Secret actuel invalide}, '422': {description: Nouveau secret trop faible}}
+  /bootstrap:
+    get:
+      tags: [bootstrap]
+      summary: Payload de démarrage complet
+      parameters: [{name: windowDays, in: query, schema: {type: integer, default: 90, maximum: 365}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Bootstrap'}}}, '401': {}}}
+  /settings:
+    get:
+      tags: [settings]
+      summary: Paramètres (sans secrets)
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Settings'}}}}}
+    put:
+      tags: [settings]
+      summary: Mise à jour des paramètres
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Settings'}}}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Settings'}}}}}
+  /catalog:
+    get:
+      tags: [catalog]
+      summary: Liste du catalogue
+      parameters: [{name: activeOnly, in: query, schema: {type: boolean}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/CatalogItem'}}}}}}
+    post:
+      tags: [catalog]
+      summary: Création article
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CatalogItem'}}}}
+      responses: {'201': {description: Créé, content: {application/json: {schema: {$ref: '#/components/schemas/CatalogItem'}}}}}
+  /catalog/{id}:
+    put:
+      tags: [catalog]
+      summary: Mise à jour article
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CatalogItem'}}}}
+      responses: {'200': {description: OK}, '404': {}}
+    delete:
+      tags: [catalog]
+      summary: Désactivation article
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'204': {description: OK}, '404': {}}
+  /clients:
+    get:
+      tags: [clients]
+      summary: Liste clients (archivés exclus)
+      parameters: [{name: q, in: query, schema: {type: string}}, {name: page, in: query, schema: {type: integer}}, {name: pageSize, in: query, schema: {type: integer}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/PageOfClients'}}}}}
+    post:
+      tags: [clients]
+      summary: Création client
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Client'}}}}
+      responses: {'201': {description: Créé, content: {application/json: {schema: {$ref: '#/components/schemas/Client'}}}}}
+  /clients/{id}:
+    get:
+      tags: [clients]
+      summary: Fiche client (historique wallet 40 dernières)
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Client'}}}}, '404': {}}
+    put:
+      tags: [clients]
+      summary: Mise à jour client
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Client'}}}}
+      responses: {'200': {description: OK}, '404': {}}
+    delete:
+      tags: [clients]
+      summary: Archivage client (commandes conservées)
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'204': {description: OK}, '404': {}}
+  /clients/{id}/wallet/topups:
+    post:
+      tags: [clients]
+      summary: Recharge prépayée (idempotent)
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}, {name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/TopupIn'}}}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Client'}}}}, '404': {}, '422': {}}
+  /orders:
+    get:
+      tags: [orders]
+      summary: Liste commandes paginée
+      parameters:
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/OrderStatus'}}
+        - {name: clientId, in: query, schema: {type: string, format: uuid}}
+        - {name: q, in: query, schema: {type: string}, description: ticket ou nom client}
+        - {name: includeVoided, in: query, schema: {type: boolean}}
+        - {name: page, in: query, schema: {type: integer}}
+        - {name: pageSize, in: query, schema: {type: integer}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/PageOfOrders'}}}}}
+    post:
+      tags: [orders]
+      summary: Création dépôt (recalcul serveur autoritaire)
+      parameters: [{name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/OrderDraft'}}}}
+      responses:
+        '200': {description: Créée, content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}
+        '404': {description: Client/zone/article introuvable}
+        '422': {description: business_rule (stock, prépayé insuffisant, secret faible…)}
+  /orders/{id}:
+    get:
+      tags: [orders]
+      summary: Détail commande (items + photos)
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}, '404': {}}
+  /orders/{id}/status:
+    patch:
+      tags: [orders]
+      summary: Avancement statut
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [status], properties: {status: {$ref: '#/components/schemas/OrderStatus'}}}}}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}, '409': {description: transition invalide ou commande annulée}}
+  /orders/{id}/payments:
+    post:
+      tags: [orders]
+      summary: Encaissement (rejet si > solde)
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}, {name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [amountFCFA, method], properties: {amountFCFA: {type: integer, minimum: 1}, method: {$ref: '#/components/schemas/PaymentMethod'}}}}}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}
+        '409': {description: commande annulée}
+        '422': {description: surpaiement (business_rule)}
+  /orders/{id}/void:
+    post:
+      tags: [orders]
+      summary: Annulation non destructive
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [reason], properties: {reason: {type: string}}}}}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Order'}}}}, '409': {}}
+  /orders/{id}/photos/{photoId}:
+    get:
+      tags: [orders]
+      summary: Photo de réserve (privé, session requise)
+      parameters: [{name: id, in: path, required: true, schema: {type: string}}, {name: photoId, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: image/jpeg, content: {image/jpeg: {schema: {type: string, format: binary}}}}, '404': {}}
+  /expenses:
+    get:
+      tags: [cashbook]
+      summary: Dépenses paginées
+      parameters: [{name: from, in: query, schema: {type: string, format: date}}, {name: to, in: query, schema: {type: string, format: date}}, {name: page, in: query, schema: {type: integer}}, {name: pageSize, in: query, schema: {type: integer}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/PageOfExpenses'}}}}}
+    post:
+      tags: [cashbook]
+      summary: Création dépense
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/Expense'}}}}
+      responses: {'201': {description: Créée, content: {application/json: {schema: {$ref: '#/components/schemas/Expense'}}}}}
+  /expenses/{id}:
+    delete:
+      tags: [cashbook]
+      summary: Suppression logique
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'204': {description: OK}, '404': {}}
+  /reports/daily-z:
+    get:
+      tags: [cashbook]
+      summary: Rapport Z journalier
+      parameters: [{name: date, in: query, schema: {type: string, format: date}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/DailyZ'}}}}}
+  /reports/monthly:
+    get:
+      tags: [cashbook]
+      summary: Bilan mensuel
+      parameters: [{name: month, in: query, schema: {type: string, example: '2026-11'}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/MonthlyReport'}}}}}
+  /delivery-zones:
+    get:
+      tags: [logistics]
+      summary: Zones de livraison
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/DeliveryZone'}}}}}}
+    post:
+      tags: [logistics]
+      summary: Création zone
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DeliveryZone'}}}}
+      responses: {'201': {description: Créée}}
+  /delivery-zones/{id}:
+    put:
+      tags: [logistics]
+      summary: Mise à jour zone
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DeliveryZone'}}}}
+      responses: {'200': {description: OK}, '404': {}}
+    delete:
+      tags: [logistics]
+      summary: Suppression zone
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'204': {description: OK}, '404': {}}
+  /logistics:
+    get:
+      tags: [logistics]
+      summary: Tâches logistiques
+      parameters: [{name: status, in: query, schema: {$ref: '#/components/schemas/LogisticsStatus'}}, {name: type, in: query, schema: {$ref: '#/components/schemas/LogisticsType'}}, {name: date, in: query, schema: {type: string, format: date}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/LogisticsTask'}}}}}}
+    post:
+      tags: [logistics]
+      summary: Création tâche
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/LogisticsTask'}}}}
+      responses: {'201': {description: Créée, content: {application/json: {schema: {$ref: '#/components/schemas/LogisticsTask'}}}}}
+  /logistics/{id}:
+    delete:
+      tags: [logistics]
+      summary: Suppression tâche
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'204': {description: OK}, '404': {}}
+  /logistics/{id}/status:
+    patch:
+      tags: [logistics]
+      summary: Changement statut (livraison effectuée → commande livrée, même tx)
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [status], properties: {status: {$ref: '#/components/schemas/LogisticsStatus'}}}}}}
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/LogisticsTask'}}}}, '404': {}}
+  /inventory:
+    get:
+      tags: [inventory]
+      summary: Articles de stock
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/InventoryItem'}}}}}}
+    post:
+      tags: [inventory]
+      summary: Création article
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/InventoryItem'}}}}
+      responses: {'201': {description: Créé, content: {application/json: {schema: {$ref: '#/components/schemas/InventoryItem'}}}}}
+  /inventory/{id}:
+    put:
+      tags: [inventory]
+      summary: Mise à jour article
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/InventoryItem'}}}}
+      responses: {'200': {description: OK}, '404': {}}
+    delete:
+      tags: [inventory]
+      summary: Archivage article (mouvements conservés)
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'204': {description: OK}, '404': {}}
+  /inventory/{id}/movements:
+    post:
+      tags: [inventory]
+      summary: Mouvement de stock (+dépense auto optionnelle, même tx)
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}, {name: Idempotency-Key, in: header, required: true, schema: {type: string}}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/MovementIn'}}}}
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/InventoryItem'}}}}
+        '422': {description: sortie > disponible (business_rule)}
+  /backup/export:
+    get:
+      tags: [backup]
+      summary: Export JSON (compatible v3 + extra serveur)
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object}}}}}
+  /backup/preview:
+    post:
+      tags: [backup]
+      summary: Validation d'un backup sans écriture
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {'200': {description: Rapport, content: {application/json: {schema: {$ref: '#/components/schemas/BackupPreview'}}}}}
+  /backup/restore:
+    post:
+      tags: [backup]
+      summary: Restauration atomique (audité)
+      requestBody: {required: true, content: {application/json: {schema: {type: object}}}}
+      responses: {'200': {description: Rapport final, content: {application/json: {schema: {$ref: '#/components/schemas/BackupPreview'}}}}, '422': {description: backup invalide — rien écrit}}
+  /sync/push:
+    post:
+      tags: [sync]
+      summary: Pousser des opérations offline (idempotent)
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SyncPush'}}}}
+      responses: {'200': {description: Résultats par opération, content: {application/json: {schema: {$ref: '#/components/schemas/SyncPushResults'}}}}}
+  /sync/pull:
+    get:
+      tags: [sync]
+      summary: Changements serveur incrémentaux
+      parameters: [{name: sinceRevision, in: query, schema: {type: integer, format: int64}}, {name: limit, in: query, schema: {type: integer, default: 500, maximum: 2000}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/SyncPull'}}}}}
+  /sync/status:
+    get:
+      tags: [sync]
+      summary: État de synchronisation de l'appareil
+      responses: {'200': {description: OK, content: {application/json: {schema: {type: object, properties: {lastAppliedAt: {type: string, format: date-time}, lastPushRevision: {type: integer}, cursor: {type: integer}}}}}}}
+components:
+  securitySchemes:
+    sessionCookie: {type: apiKey, in: cookie, name: eclat_session}
+  security:
+    - sessionCookie: []
+  schemas:
+    OrderStatus: {type: string, enum: [recu, lavage, repassage, pret, livre]}
+    ServiceMode: {type: string, enum: [nettoyage_sec, lavage_simple, lavage_repassage, repassage_seul, blanchisserie]}
+    PaymentMethod: {type: string, enum: [especes, wave, orange_money, mtn_momo, moov_money]}
+    LogisticsStatus: {type: string, enum: [planifie, en_cours, effectue, annule]}
+    LogisticsType: {type: string, enum: [enlevement, livraison]}
+    InventoryMovementType: {type: string, enum: [entree, sortie, ajustement]}
+    ShopActivityScope: {type: string, enum: [both, pressing, blanchisserie]}
+    AuthStatus:
+      type: object
+      properties:
+        state: {type: string, enum: [virgin, legacy, argon2id]}
+        onboardingCompleted: {type: boolean}
+        locked: {type: boolean}
+        lockRemainingSeconds: {type: integer}
+    SecretIn:
+      type: object
+      required: [secret]
+      properties: {secret: {type: string, description: 'PIN 5 chiffres (LAN) ou mot de passe fort (Internet)'}}
+    Me:
+      type: object
+      properties: {authenticated: {type: boolean}, sessionExpiresAt: {type: string, format: date-time}}
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: {type: string, enum: [invalid_request, unauthorized, forbidden, not_found, conflict, business_rule, rate_limited, internal]}
+            message: {type: string}
+            details: {type: object, additionalProperties: true}
+    LoyaltyConfig:
+      type: object
+      properties: {enabled: {type: boolean}, fcfaPerPoint: {type: integer}, rewardThresholdPoints: {type: integer}, rewardDiscountFCFA: {type: integer}}
+    BlanchisserieConfig:
+      type: object
+      properties:
+        enabledServices: {type: object, additionalProperties: {type: boolean}}
+        enableUnit: {type: boolean}
+        unitPricesFCFA: {type: object, additionalProperties: {type: integer}}
+        packs: {type: array, items: {type: object, properties: {id: {type: string}, garmentCount: {type: integer}, active: {type: boolean}, pricesFCFA: {type: object, additionalProperties: {type: integer}}}}}
+    PressingConfig:
+      type: object
+      properties:
+        weightEnabled: {type: boolean}
+        pricePerKgByMode: {type: object, additionalProperties: {type: integer}}
+        weightOffers: {type: array, items: {type: object, properties: {id: {type: string}, label: {type: string}, weightKg: {type: number}, mode: {$ref: '#/components/schemas/ServiceMode'}, priceFCFA: {type: integer}, active: {type: boolean}}}}
+        expressPricingMode: {type: string, enum: [fixed_per_piece, percent]}
+        expressFixedAmountFCFA: {type: integer}
+        expressPercent: {type: integer}
+    Settings:
+      type: object
+      properties:
+        id: {type: string, const: default}
+        shopName: {type: string}
+        tagline: {type: string}
+        commune: {type: string}
+        address: {type: string}
+        phone: {type: string}
+        whatsappPhone: {type: string}
+        rccm: {type: string}
+        expressPercent: {type: integer}
+        ticketFooterNote: {type: string}
+        nextTicketSequence: {type: integer}
+        activityScope: {$ref: '#/components/schemas/ShopActivityScope'}
+        blanchisserieConfig: {$ref: '#/components/schemas/BlanchisserieConfig'}
+        pressingConfig: {$ref: '#/components/schemas/PressingConfig'}
+        loyaltyConfig: {$ref: '#/components/schemas/LoyaltyConfig'}
+        onboardingCompleted: {type: boolean}
+    CatalogItem:
+      type: object
+      properties:
+        id: {type: string}
+        name: {type: string}
+        category: {type: string}
+        defaultMode: {$ref: '#/components/schemas/ServiceMode'}
+        priceFCFA: {type: integer}
+        unit: {type: string, enum: [pièce, kg, paire]}
+        active: {type: boolean}
+        imageUrl: {type: string, nullable: true}
+        turnaroundDays: {type: integer, nullable: true}
+        careNote: {type: string, nullable: true}
+    ClientWalletEntry:
+      type: object
+      properties: {id: {type: string}, date: {type: string, format: date-time}, type: {type: string, enum: [recharge, utilisation, bonus]}, amountFCFA: {type: integer}, method: {$ref: '#/components/schemas/PaymentMethod'}, note: {type: string}}
+    Client:
+      type: object
+      properties:
+        id: {type: string}
+        fullName: {type: string}
+        phone: {type: string}
+        commune: {type: string}
+        addressNote: {type: string, nullable: true}
+        createdAt: {type: string, format: date-time}
+        loyaltyPoints: {type: integer}
+        prepaidBalanceFCFA: {type: integer}
+        subscriptionLabel: {type: string, nullable: true}
+        subscriptionExpiresAt: {type: string, format: date, nullable: true}
+        walletHistory: {type: array, items: {$ref: '#/components/schemas/ClientWalletEntry'}}
+    TopupIn:
+      type: object
+      required: [method]
+      properties:
+        amountFCFA: {type: integer, minimum: 0}
+        bonusFCFA: {type: integer, minimum: 0}
+        method: {$ref: '#/components/schemas/PaymentMethod'}
+        subscriptionLabel: {type: string}
+        subscriptionExpiresAt: {type: string, format: date}
+        note: {type: string}
+    OrderLineItem:
+      type: object
+      properties:
+        id: {type: string}
+        catalogItemId: {type: string, nullable: true}
+        name: {type: string}
+        mode: {$ref: '#/components/schemas/ServiceMode'}
+        quantity: {type: number}
+        unit: {type: string, enum: [pièce, kg, paire, lot]}
+        unitPriceFCFA: {type: integer}
+        note: {type: string}
+        activityType: {type: string, enum: [pressing, blanchisserie]}
+        pricingBasis: {type: string}
+        piecesPerUnit: {type: integer, nullable: true}
+        weightKg: {type: number, nullable: true}
+        isExpress: {type: boolean}
+        expressFeeFCFA: {type: integer}
+        expressDueDate: {type: string, format: date, nullable: true}
+    OrderClaimPhoto:
+      type: object
+      properties:
+        id: {type: string}
+        caption: {type: string}
+        itemName: {type: string}
+        capturedAt: {type: string, format: date-time}
+        url: {type: string, description: "chemin privé /api/v1/orders/{id}/photos/{photoId}"}
+    Order:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        ticketNumber: {type: string}
+        clientId: {type: string, nullable: true}
+        clientName: {type: string}
+        clientPhone: {type: string}
+        commune: {type: string}
+        rackSlot: {type: string}
+        items: {type: array, items: {$ref: '#/components/schemas/OrderLineItem'}}
+        isExpress: {type: boolean}
+        expressFeeFCFA: {type: integer}
+        deliveryFeeFCFA: {type: integer}
+        discountFCFA: {type: integer}
+        prepaidUsedFCFA: {type: integer}
+        loyaltyPointsEarned: {type: integer}
+        loyaltyPointsRedeemed: {type: integer}
+        claimPhotos: {type: array, items: {$ref: '#/components/schemas/OrderClaimPhoto'}}
+        subtotalFCFA: {type: integer}
+        totalFCFA: {type: integer}
+        paidFCFA: {type: integer}
+        status: {$ref: '#/components/schemas/OrderStatus'}
+        dropOffDate: {type: string, format: date}
+        dueDate: {type: string, format: date}
+        deliveredAt: {type: string, format: date-time, nullable: true}
+        notes: {type: string}
+        voidedAt: {type: string, format: date-time, nullable: true}
+        voidReason: {type: string, nullable: true}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    OrderDraft:
+      type: object
+      required: [clientName, clientPhone, items, dropOffDate]
+      properties:
+        idempotencyKey: {type: string}
+        clientId: {type: string, nullable: true}
+        newClient: {$ref: '#/components/schemas/Client'}
+        clientName: {type: string}
+        clientPhone: {type: string}
+        commune: {type: string}
+        rackSlot: {type: string}
+        items: {type: array, items: {$ref: '#/components/schemas/OrderLineItem'}}
+        deliveryZoneId: {type: string, nullable: true}
+        deliveryFeeFCFA: {type: integer}
+        discountFCFA: {type: integer}
+        usePrepaid: {type: boolean}
+        prepaidAmountFCFA: {type: integer}
+        loyaltyPointsRedeemed: {type: integer}
+        initialPaymentMethod: {$ref: '#/components/schemas/PaymentMethod'}
+        dropOffDate: {type: string, format: date}
+        dueDate: {type: string, format: date}
+        notes: {type: string}
+        claimPhotos: {type: array, items: {type: object, properties: {id: {type: string}, dataUrl: {type: string}, caption: {type: string}, itemName: {type: string}, capturedAt: {type: string, format: date-time}}}}
+    PageMeta:
+      type: object
+      properties: {total: {type: integer}, page: {type: integer}, pageSize: {type: integer}}
+    PageOfOrders:
+      allOf: [{type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Order'}}}}, {$ref: '#/components/schemas/PageMeta'}]
+    PageOfClients:
+      allOf: [{type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Client'}}}}, {$ref: '#/components/schemas/PageMeta'}]
+    PageOfExpenses:
+      allOf: [{type: object, properties: {items: {type: array, items: {$ref: '#/components/schemas/Expense'}}}}, {$ref: '#/components/schemas/PageMeta'}]
+    Expense:
+      type: object
+      properties:
+        id: {type: string}
+        label: {type: string}
+        category: {type: string}
+        amountFCFA: {type: integer}
+        method: {$ref: '#/components/schemas/PaymentMethod'}
+        date: {type: string, format: date}
+        note: {type: string}
+        createdAt: {type: string, format: date-time}
+    PaymentRecord:
+      type: object
+      properties:
+        id: {type: string}
+        orderId: {type: string, nullable: true}
+        ticketNumber: {type: string}
+        clientName: {type: string}
+        amountFCFA: {type: integer}
+        method: {$ref: '#/components/schemas/PaymentMethod'}
+        paidAt: {type: string, format: date-time}
+        type: {type: string, enum: [acompte, solde, integral]}
+        kind: {type: string, enum: [order, prepaid_topup]}
+    DailyZ:
+      type: object
+      properties:
+        date: {type: string, format: date}
+        revenueByMethod: {type: object, additionalProperties: {type: integer}}
+        revenueOrder: {type: integer}
+        revenuePrepaidTopup: {type: integer}
+        revenueTotal: {type: integer}
+        expensesTotal: {type: integer}
+        expensesByCategory: {type: object, additionalProperties: {type: integer}}
+        netCash: {type: integer}
+        ordersCount: {type: integer}
+    MonthlyReport:
+      type: object
+      properties:
+        month: {type: string}
+        revenueTotal: {type: integer}
+        revenueOrder: {type: integer}
+        revenuePrepaidTopup: {type: integer}
+        expensesTotal: {type: integer}
+        net: {type: integer}
+        days: {type: array, items: {type: object, properties: {date: {type: string, format: date}, revenue: {type: integer}, expenses: {type: integer}}}}
+    DeliveryZone:
+      type: object
+      properties: {id: {type: string}, commune: {type: string}, feeFCFA: {type: integer}, pickupFeeFCFA: {type: integer}, active: {type: boolean}}
+    LogisticsTask:
+      type: object
+      properties:
+        id: {type: string}
+        type: {$ref: '#/components/schemas/LogisticsType'}
+        status: {$ref: '#/components/schemas/LogisticsStatus'}
+        clientId: {type: string, nullable: true}
+        clientName: {type: string}
+        clientPhone: {type: string}
+        commune: {type: string}
+        addressDetail: {type: string}
+        orderId: {type: string, nullable: true}
+        ticketNumber: {type: string, nullable: true}
+        scheduledDate: {type: string, format: date}
+        timeSlot: {type: string}
+        courierName: {type: string}
+        courierPhone: {type: string}
+        estimatedPieces: {type: integer, nullable: true}
+        feeFCFA: {type: integer}
+        notes: {type: string}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    InventoryItem:
+      type: object
+      properties:
+        id: {type: string}
+        name: {type: string}
+        sku: {type: string}
+        category: {type: string}
+        activityScope: {$ref: '#/components/schemas/ShopActivityScope'}
+        unit: {type: string}
+        quantity: {type: number}
+        minThreshold: {type: number}
+        unitCostFCFA: {type: integer}
+        supplier: {type: string}
+        notes: {type: string}
+        updatedAt: {type: string, format: date-time}
+    MovementIn:
+      type: object
+      required: [type, quantity, reason]
+      properties:
+        type: {$ref: '#/components/schemas/InventoryMovementType'}
+        quantity: {type: number, minimum: 0}
+        unitCostFCFA: {type: integer, nullable: true}
+        reason: {type: string}
+        recordExpense: {type: boolean}
+        paymentMethod: {$ref: '#/components/schemas/PaymentMethod'}
+    BackupPreview:
+      type: object
+      properties:
+        valid: {type: boolean}
+        version: {type: integer}
+        counts: {type: object, additionalProperties: {type: integer}}
+        duplicates: {type: array, items: {type: string}}
+        anomalies: {type: array, items: {type: string}}
+        photosToImport: {type: integer}
+        pinMigration: {type: string, enum: [none, legacy_rehash, missing]}
+    SyncOperationIn:
+      type: object
+      required: [operationId, type, payload]
+      properties:
+        operationId: {type: string, format: uuid}
+        type: {type: string}
+        payload: {type: object, additionalProperties: true}
+        dependsOn: {type: string, format: uuid, nullable: true}
+        localCreatedAt: {type: string, format: date-time}
+    SyncPush:
+      type: object
+      required: [deviceId, operations]
+      properties:
+        deviceId: {type: string}
+        operations: {type: array, items: {$ref: '#/components/schemas/SyncOperationIn'}}
+    SyncOpResult:
+      type: object
+      properties:
+        operationId: {type: string}
+        status: {type: string, enum: [accepted, duplicate, conflict, rejected]}
+        entity: {type: object, additionalProperties: true}
+        errorCode: {type: string}
+        message: {type: string}
+        officialTicket: {type: string, nullable: true}
+    SyncPushResults:
+      type: object
+      properties: {results: {type: array, items: {$ref: '#/components/schemas/SyncOpResult'}}, cursor: {type: integer, format: int64}}
+    SyncPull:
+      type: object
+      properties:
+        sinceRevision: {type: integer, format: int64}
+        cursor: {type: integer, format: int64}
+        hasMore: {type: boolean}
+        changes: {type: array, items: {type: object, properties: {entity: {type: string}, entity_id: {type: string}, op: {type: string, enum: [upsert, delete]}, data: {type: object, additionalProperties: true}, revision: {type: integer, format: int64}}}}
+    Bootstrap:
+      type: object
+      properties:
+        settings: {$ref: '#/components/schemas/Settings'}
+        catalog: {type: array, items: {$ref: '#/components/schemas/CatalogItem'}}
+        clients: {type: array, items: {$ref: '#/components/schemas/Client'}}
+        orders: {type: array, items: {$ref: '#/components/schemas/Order'}}
+        payments: {type: array, items: {$ref: '#/components/schemas/PaymentRecord'}}
+        expenses: {type: array, items: {$ref: '#/components/schemas/Expense'}}
+        zones: {type: array, items: {$ref: '#/components/schemas/DeliveryZone'}}
+        logistics: {type: array, items: {$ref: '#/components/schemas/LogisticsTask'}}
+        inventory: {type: array, items: {$ref: '#/components/schemas/InventoryItem'}}
+        inventoryMovements: {type: array, items: {type: object}}
+        sync: {type: object, properties: {cursor: {type: integer, format: int64}, serverTime: {type: string, format: date-time}}}
