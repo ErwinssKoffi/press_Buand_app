@@ -43,7 +43,12 @@ jobs:
               rm go.sum
               go mod tidy >/dev/null 2>&1 || true
               go mod tidy >/dev/null 2>&1
-              echo "::error title=go.sum canonique::$(< go.sum)"
+              split -b 700 go.sum /tmp/gosum- 2>/dev/null
+              i=1
+              for f in /tmp/gosum-*; do
+                echo "::error title=gosum-part-$i::$(< "$f")"
+                i=$((i+1))
+              done
             }
             echo "::error title=go vet::$(tail -c 1200 /tmp/vet.log | tr '\n' ';')"
           fi
