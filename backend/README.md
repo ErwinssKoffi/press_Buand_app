@@ -56,6 +56,12 @@ ECLAT_TEST_DATABASE_URL='postgres://eclat@127.0.0.1:5432/eclat_it?sslmode=disabl
 
 Les tests d'intégration sautent proprement si `ECLAT_TEST_DATABASE_URL` n'est pas défini.
 
+## Exploitation
+
+Variables détaillées : `.env.example`. Mise en production, reverse proxy HTTPS,
+mises à jour et retour arrière : `docs/deployment/PRODUCTION.md` ;
+sauvegarde/restauration : `docs/deployment/BACKUP-RESTORE.md`.
+
 ## Environnements à réseau restreint (CI isolée)
 
 Si seul GitHub est joignable (ex. sandbox sans accès à proxy.golang.org / golang.org /
