@@ -43,10 +43,13 @@ jobs:
               rm go.sum
               go mod tidy >/dev/null 2>&1 || true
               go mod tidy >/dev/null 2>&1
-              split -b 700 go.sum /tmp/gosum- 2>/dev/null
+              split -b 900 go.sum /tmp/gosum- 2>/dev/null
               i=1
               for f in /tmp/gosum-*; do
-                echo "::error title=gosum-part-$i::$(< "$f")"
+                msg="$(< "$f")"
+                msg="${msg//'%'/'%25'}"
+                msg="${msg//$'\n'/'%0A'}"
+                echo "::error title=gosum-part-$i::$msg"
                 i=$((i+1))
               done
             }
